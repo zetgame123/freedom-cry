@@ -4,8 +4,10 @@ WORKDIR /app
 
 RUN apk add --no-cache git ca-certificates
 
+ENV GOPROXY="https://proxy.golang.org,https://goproxy.io,direct"
+
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download || (sleep 2 && go mod download)
 
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/server ./cmd/server
