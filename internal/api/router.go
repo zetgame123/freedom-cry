@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"freedom-cry/internal/api/handler"
 	"freedom-cry/internal/api/middleware"
@@ -26,9 +27,9 @@ func SetupRouter(
 
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		SkipPaths: []string{"/health"},
-	}))
+	// SECURITY & PRIVACY (FC-04): Use PrivacyLogger to mask subscription tokens
+	// and suppress recording user home IP addresses in logs.
+	r.Use(middleware.PrivacyLogger())
 
 	// Global Security Headers Middleware
 	r.Use(func(c *gin.Context) {
@@ -42,10 +43,16 @@ func SetupRouter(
 		c.Next()
 	})
 
-	// CORS Middleware (Strict headers)
+	// CORS Middleware (Strict standards-compliant headers)
 	r.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		origin := c.Request.Header.Get("Origin")
+		if origin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		} else {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		}
+		c.Writer.Header().Set("Vary", "Origin")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Node-ID, X-Node-Token, X-Node-Timestamp, X-Node-Signature")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 
@@ -69,28 +76,30 @@ func SetupRouter(
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "Freedom Cry VPN API"})
 	})
 
-	// Public Subscription Endpoints (No auth needed, protected by 256-bit secret token)
+	// Public Subscription Endpoints (Protected by 256-bit secret token)
 	subGroup := r.Group("/sub")
 	{
 		subGroup.GET("/:token", configH.GetSubscription)
 		subGroup.GET("/:token/vless", configH.GetRawVless)
 		subGroup.GET("/:token/awg/:node_id", configH.GetAmneziaWGConfig)
+		subGroup.POST("/:token/awg/:node_id/pubkey", configH.RegisterClientPubKey)
 		subGroup.GET("/:token/info", configH.GetSubInfo)
 	}
 
 	// API v1
 	v1 := r.Group("/api/v1")
 	{
-		// Public Auth
+		// Public Auth protected by rate-limiting (10 attempts / min per IP)
+		authLimiter := middleware.NewRateLimiter(10, time.Minute)
 		authGroup := v1.Group("/auth")
+		authGroup.Use(authLimiter.Middleware())
 		{
 			authGroup.POST("/register", authH.Register)
 			authGroup.POST("/login", authH.Login)
 		}
 
-		// Public Plans & Nodes
+		// Public Plans
 		v1.GET("/plans", userH.GetPlans)
-		v1.GET("/nodes", nodeH.ListNodes)
 
 		// Node Agent Sync endpoints (Protected by cryptographic per-node identity verification)
 		nodeAgentGroup := v1.Group("/node")
@@ -105,8 +114,13 @@ func SetupRouter(
 		userGroup.Use(middleware.AuthMiddleware(cfg))
 		{
 			userGroup.GET("/me", userH.GetMe)
+			userGroup.DELETE("/me", userH.DeleteMe) // GDPR hard-delete / Right-to-be-forgotten
+			userGroup.GET("/nodes", nodeH.ListNodes) // FC-05: Authenticated nodes list
 			userGroup.GET("/subscriptions", subH.GetMySubscriptions)
 			userGroup.POST("/subscriptions/buy", subH.BuySubscription)
+			userGroup.POST("/subscriptions/:id/rotate", subH.RotateToken)
+			userGroup.POST("/subscriptions/:id/revoke", subH.RevokeSubscription)
+			userGroup.PUT("/subscriptions/:id/awg-key", subH.UpdateAWGKey)
 
 			// Billing
 			userGroup.POST("/billing/deposit", billingH.CreateDeposit)

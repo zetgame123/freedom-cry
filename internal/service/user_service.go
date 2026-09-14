@@ -114,3 +114,38 @@ func (s *UserService) generateJWT(user *models.User) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(s.cfg.JWT.Secret))
 }
+
+// HardDeleteUser physically purges all user data from PostgreSQL (GDPR Right-to-be-Forgotten / Privacy Hardening).
+// Permanently erases user identity, subscriptions, client keys, and billing records without leaving soft-deleted rows.
+func (s *UserService) HardDeleteUser(userID uuid.UUID) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var subIDs []uuid.UUID
+		if err := tx.Model(&models.Subscription{}).Unscoped().Where("user_id = ?", userID).Pluck("id", &subIDs).Error; err != nil {
+			return err
+		}
+
+		if len(subIDs) > 0 {
+			if err := tx.Unscoped().Where("subscription_id IN ?", subIDs).Delete(&models.ClientKey{}).Error; err != nil {
+				return err
+			}
+		}
+
+		if err := tx.Unscoped().Where("user_id = ?", userID).Delete(&models.Subscription{}).Error; err != nil {
+			return err
+		}
+
+		if err := tx.Unscoped().Where("user_id = ?", userID).Delete(&models.Transaction{}).Error; err != nil {
+			return err
+		}
+
+		res := tx.Unscoped().Where("id = ?", userID).Delete(&models.User{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errors.New("user not found")
+		}
+
+		return nil
+	})
+}

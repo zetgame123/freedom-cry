@@ -83,7 +83,7 @@ func (s *NodeService) CreateNode(dto CreateNodeDTO) (*models.ServerNode, string,
 
 		AwgEnabled:      true,
 		AwgPort:         awgPort,
-		AwgServerSubnet: "10.8.0.0/24",
+		AwgServerSubnet: "10.8.0.1/16, fd00:8::1/64",
 		AwgPubKey:       awgKeys.PublicKey,
 		AwgJc:           awgParams.Jc,
 		AwgJmin:         awgParams.Jmin,

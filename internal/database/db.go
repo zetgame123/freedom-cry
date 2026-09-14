@@ -58,8 +58,10 @@ func Connect(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 	// from database tables so that secrets are erased at the schema level.
 	_ = db.Exec("ALTER TABLE server_nodes DROP COLUMN IF EXISTS reality_priv_key, DROP COLUMN IF EXISTS awg_priv_key").Error
 	_ = db.Exec("ALTER TABLE client_keys DROP COLUMN IF EXISTS awg_private_key").Error
+	// Subnet Routing Hardening: Update any legacy /24 subnets to /16 dual-stack
+	_ = db.Model(&models.ServerNode{}).Where("awg_server_subnet = ? OR awg_server_subnet = ?", "10.8.0.0/24", "10.8.0.1/24").Update("awg_server_subnet", "10.8.0.1/16, fd00:8::1/64").Error
 
-	log.Println("[Database] Schema migrations and key cleanup applied successfully")
+	log.Println("[Database] Schema migrations, key cleanup, and subnet hardening applied successfully")
 
 	// Seed default data if empty
 	SeedDefaults(db)
@@ -173,7 +175,7 @@ func SeedDefaults(db *gorm.DB) {
 
 				AwgEnabled:      true,
 				AwgPort:         51820,
-				AwgServerSubnet: "10.8.0.0/24",
+				AwgServerSubnet: "10.8.0.1/16, fd00:8::1/64",
 				AwgPubKey:       awgKeys.PublicKey,
 				AwgJc:           awgParams.Jc,
 				AwgJmin:         awgParams.Jmin,

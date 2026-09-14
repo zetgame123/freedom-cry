@@ -39,7 +39,7 @@ type ServerNode struct {
 	// NOTE: Server private key is generated and stored locally on the Node, NOT on Master.
 	AwgEnabled      bool   `gorm:"default:true" json:"awg_enabled"`
 	AwgPort         int    `gorm:"default:51820" json:"awg_port"`
-	AwgServerSubnet string `gorm:"default:'10.8.0.0/24'" json:"awg_server_subnet"`
+	AwgServerSubnet string `gorm:"default:'10.8.0.1/16, fd00:8::1/64'" json:"awg_server_subnet"`
 	AwgPubKey       string `gorm:"not null" json:"awg_pub_key"` // WireGuard public key
 	// AWG Obfuscation Parameters
 	AwgJc   int    `gorm:"default:4" json:"awg_jc"`      // Junk packet count

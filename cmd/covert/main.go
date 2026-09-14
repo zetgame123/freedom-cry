@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"log"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"freedom-cry/internal/protocol/covert/cups"
 	"freedom-cry/internal/protocol/covert/tunnel"
 	"freedom-cry/internal/protocol/covert/yandex"
+
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -28,10 +31,20 @@ func main() {
 	docToken := flag.String("ydoc-token", "", "Yandex Doc session token (optional manual override)")
 
 	// Cups.online flags
-	roomUUID := flag.String("room", "freedom-cry-emergency-room", "Cups.online Room UUID")
+	roomUUID := flag.String("room", "", "Cups.online Room UUID (if not provided, securely derived from -key)")
 	sessionID := flag.Uint64("session", 1, "Session ID for covert stream isolation")
 
 	flag.Parse()
+
+	// FC-08 Hardening: Derive room UUID deterministically from secretKey if not explicitly provided
+	if *roomUUID == "" || *roomUUID == "freedom-cry-emergency-room" {
+		h := sha256.Sum256([]byte("freedom-cry-cups-room-v1:" + *secretKey))
+		derivedUUID, err := uuid.FromBytes(h[:16])
+		if err == nil {
+			*roomUUID = derivedUUID.String()
+			log.Printf("[Covert] Derived private room UUID: %s", *roomUUID)
+		}
+	}
 
 	log.Println("==================================================")
 	log.Println("   🦅 Freedom Cry - Covert Whitelist Tunnel       ")

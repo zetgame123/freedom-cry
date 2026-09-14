@@ -92,3 +92,82 @@ func (h *SubscriptionHandler) BuySubscription(c *gin.Context) {
 		"expires_at":       sub.ExpiresAt,
 	})
 }
+
+func (h *SubscriptionHandler) RotateToken(c *gin.Context) {
+	userIDVal, _ := c.Get(middleware.ContextUserID)
+	userID := userIDVal.(uuid.UUID)
+
+	subIDStr := c.Param("id")
+	subID, err := uuid.Parse(subIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+		return
+	}
+
+	sub, err := h.subServ.RotateSubscriptionToken(userID, subID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	subURL := fmt.Sprintf("%s/sub/%s", h.cfg.App.BaseURL, sub.Token)
+	c.JSON(http.StatusOK, gin.H{
+		"message":          "Token rotated successfully. Previous URL is now invalid.",
+		"subscription_id":  sub.ID,
+		"new_token":        sub.Token,
+		"subscription_url": subURL,
+	})
+}
+
+func (h *SubscriptionHandler) RevokeSubscription(c *gin.Context) {
+	userIDVal, _ := c.Get(middleware.ContextUserID)
+	userID := userIDVal.(uuid.UUID)
+
+	subIDStr := c.Param("id")
+	subID, err := uuid.Parse(subIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+		return
+	}
+
+	if err := h.subServ.RevokeSubscription(userID, subID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Subscription revoked and tunnel keys purged from nodes.",
+	})
+}
+
+type UpdateAWGKeyDTO struct {
+	NodeID    uuid.UUID `json:"node_id" binding:"required"`
+	PublicKey string    `json:"public_key" binding:"required"`
+}
+
+func (h *SubscriptionHandler) UpdateAWGKey(c *gin.Context) {
+	userIDVal, _ := c.Get(middleware.ContextUserID)
+	userID := userIDVal.(uuid.UUID)
+
+	subIDStr := c.Param("id")
+	subID, err := uuid.Parse(subIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid subscription id"})
+		return
+	}
+
+	var dto UpdateAWGKeyDTO
+	if err := c.ShouldBindJSON(&dto); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.subServ.UpdateClientAWGKey(userID, subID, dto.NodeID, dto.PublicKey); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Custom AmneziaWG public key registered successfully. Encrypted private key on server cleared.",
+	})
+}

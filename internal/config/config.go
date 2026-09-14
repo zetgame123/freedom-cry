@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"log"
 	"os"
 	"strconv"
 	"time"
@@ -133,6 +136,17 @@ func Load(path string) (*Config, error) {
 	}
 	if val := os.Getenv("DEFAULT_DNS"); val != "" {
 		cfg.App.DefaultDNS = val
+	}
+
+	// Security Hardening: Never allow insecure default JWT secret in release mode
+	if cfg.JWT.Secret == "freedom-cry-super-secure-jwt-secret-change-in-prod" || cfg.JWT.Secret == "" {
+		if cfg.Server.Mode == "release" {
+			rnd := make([]byte, 32)
+			if _, err := rand.Read(rnd); err == nil {
+				cfg.JWT.Secret = hex.EncodeToString(rnd)
+				log.Println("[Security] Insecure default JWT_SECRET detected in release mode. Generated ephemeral high-entropy random key.")
+			}
+		}
 	}
 
 	return cfg, nil

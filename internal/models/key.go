@@ -24,10 +24,12 @@ type ClientKey struct {
 	VlessUUID string `gorm:"type:varchar(64)" json:"vless_uuid,omitempty"`
 
 	// --- AmneziaWG details ---
-	// NOTE: Client private key is NEVER stored on Master! Client generates and holds it locally.
-	AwgAddress      string `gorm:"type:varchar(50);uniqueIndex:idx_node_awg_addr,priority:2" json:"awg_address,omitempty"` // e.g. 10.8.0.2/32
-	AwgPublicKey    string `gorm:"type:varchar(100)" json:"awg_public_key,omitempty"`                                      // client's public key (stored on server)
-	AwgPresharedKey string `gorm:"type:varchar(100)" json:"-"`
+	// NOTE: Client private key is stored ONLY encrypted with HKDF(sub.Token).
+	// Master PostgreSQL at rest NEVER contains the plaintext private key (Zero-Knowledge at rest).
+	AwgAddress         string `gorm:"type:varchar(100);uniqueIndex:idx_node_awg_addr,priority:2" json:"awg_address,omitempty"` // e.g. 10.8.0.2/32, fd00:8::2/128
+	AwgPublicKey       string `gorm:"type:varchar(100)" json:"awg_public_key,omitempty"`                                       // client's public key (stored on server)
+	AwgPrivateKeyEnc   string `gorm:"type:text" json:"-"`                                                                     // AES-256-GCM encrypted using sub.Token
+	AwgPresharedKey    string `gorm:"type:varchar(100)" json:"-"`
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`

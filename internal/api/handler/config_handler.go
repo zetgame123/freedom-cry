@@ -148,12 +148,16 @@ func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 		return
 	}
 
-	// NOTE: Zero Trust / Client Private Key Security:
-	// Master NEVER stores client private key in the database!
-	// The downloaded configuration contains the assigned IP and server public key,
-	// prompting the client to supply their local private key.
+	// Zero Knowledge at Rest: Decrypt client private key using the secret bearer token
+	clientPrivKey := "<INSERT_YOUR_LOCAL_CLIENT_PRIVATE_KEY_HERE>"
+	if targetKey.AwgPrivateKeyEnc != "" {
+		if decrypted, err := amneziawg.DecryptClientPrivateKey(token, targetKey.AwgPrivateKeyEnc); err == nil && decrypted != "" {
+			clientPrivKey = decrypted
+		}
+	}
+
 	confParams := amneziawg.ClientConfigParams{
-		ClientPrivateKey: "<INSERT_YOUR_LOCAL_CLIENT_PRIVATE_KEY_HERE>",
+		ClientPrivateKey: clientPrivKey,
 		ClientAddress:    targetKey.AwgAddress,
 		DNS:              h.cfg.App.DefaultDNS,
 		Jc:               targetKey.Node.AwgJc,
@@ -181,6 +185,43 @@ func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%s", filename))
 	c.Header("Content-Type", "application/x-wireguard-profile")
 	c.String(http.StatusOK, confContent)
+}
+
+// RegisterClientPubKey allows zero-trust clients to submit their own client-generated WireGuard public key
+func (h *ConfigHandler) RegisterClientPubKey(c *gin.Context) {
+	token := c.Param("token")
+	nodeIDStr := c.Param("node_id")
+
+	nodeID, err := uuid.Parse(nodeIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid node id"})
+		return
+	}
+
+	sub, err := h.subServ.GetByToken(token)
+	if err != nil || !sub.IsValid() {
+		c.JSON(http.StatusNotFound, gin.H{"error": "subscription not found or inactive"})
+		return
+	}
+
+	type PubKeyRequest struct {
+		PublicKey string `json:"public_key" binding:"required"`
+	}
+
+	var req PubKeyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.subServ.UpdateClientAWGKey(sub.UserID, sub.ID, nodeID, req.PublicKey); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Custom client public key successfully registered for AmneziaWG node",
+	})
 }
 
 // GetSubInfo handles /sub/:token/info (JSON metadata)

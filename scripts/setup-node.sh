@@ -200,18 +200,42 @@ iptables -I INPUT 3 -s 10.8.0.0/16 -m state --state RELATED,ESTABLISHED -j ACCEP
 iptables -C INPUT -s 10.8.0.0/16 -j DROP 2>/dev/null || \
 iptables -A INPUT -s 10.8.0.0/16 -j DROP
 
-# 4. SECURITY: Prevent IPv6 traffic leakage
-ip6tables -P FORWARD DROP 2>/dev/null || true
+# 4. SECURITY & PRIVACY (FC-06): IPv6 Leak Prevention and Dual-Stack NAT66
+sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+
+# IPv6 NAT66 for tunnel ULA subnet (fd00:8::/64)
+ip6tables -t nat -C POSTROUTING -s fd00:8::/64 -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null || \
+ip6tables -t nat -A POSTROUTING -s fd00:8::/64 -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null || true
+
+# Block client-to-client IPv6 pivoting
+ip6tables -C FORWARD -s fd00:8::/64 -d fd00:8::/64 -j DROP 2>/dev/null || \
+ip6tables -I FORWARD 1 -s fd00:8::/64 -d fd00:8::/64 -j DROP 2>/dev/null || true
+
+# Strict Host Isolation for IPv6: VPN clients can ONLY contact the host for DNS (port 53)
+ip6tables -C INPUT -s fd00:8::/64 -p udp --dport 53 -j ACCEPT 2>/dev/null || \
+ip6tables -I INPUT 1 -s fd00:8::/64 -p udp --dport 53 -j ACCEPT 2>/dev/null || true
+ip6tables -C INPUT -s fd00:8::/64 -p tcp --dport 53 -j ACCEPT 2>/dev/null || \
+ip6tables -I INPUT 2 -s fd00:8::/64 -p tcp --dport 53 -j ACCEPT 2>/dev/null || true
+ip6tables -C INPUT -s fd00:8::/64 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+ip6tables -I INPUT 3 -s fd00:8::/64 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+ip6tables -C INPUT -s fd00:8::/64 -j DROP 2>/dev/null || \
+ip6tables -A INPUT -s fd00:8::/64 -j DROP 2>/dev/null || true
+
+ip6tables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+ip6tables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+
+ip6tables -C FORWARD -s fd00:8::/64 -j ACCEPT 2>/dev/null || \
+ip6tables -A FORWARD -s fd00:8::/64 -j ACCEPT 2>/dev/null || true
 
 iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 
 iptables -C FORWARD -s 10.8.0.0/16 -j ACCEPT 2>/dev/null || \
-iptables -A FORWARD -s 10.8.0.0/16 -j ACCEPT
+iptables -A FORWARD -s 10.8.0.0/16 -j ACCEPT 2>/dev/null || true
 
-# Save iptables rules
-netfilter-persistent save >/dev/null 2>&1 || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-echo -e "${GREEN}✓ NAT-форвардинг и правила изоляции клиентов настроены${NC}"
+# Save iptables rules for both IPv4 and IPv6
+netfilter-persistent save >/dev/null 2>&1 || (iptables-save > /etc/iptables/rules.v4 2>/dev/null && ip6tables-save > /etc/iptables/rules.v6 2>/dev/null) || true
+echo -e "${GREEN}✓ Dual-Stack IPv4/IPv6 NAT-форвардинг и правила изоляции настроены${NC}"
 
 # 8. Install Freedom Cry Node Agent
 echo -e "${YELLOW}[6/7] Установка демона Freedom Cry Node Agent...${NC}"

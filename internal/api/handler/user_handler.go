@@ -43,3 +43,18 @@ func (h *UserHandler) GetPlans(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"plans": plans})
 }
+
+func (h *UserHandler) DeleteMe(c *gin.Context) {
+	userIDVal, _ := c.Get(middleware.ContextUserID)
+	userID := userIDVal.(uuid.UUID)
+
+	if err := h.userServ.HardDeleteUser(userID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "deleted",
+		"message": "User account, subscriptions, cryptographic keys, and billing records permanently erased.",
+	})
+}
