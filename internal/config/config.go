@@ -50,38 +50,89 @@ type AppConfig struct {
 func Load(path string) (*Config, error) {
 	cfg := &Config{
 		Server: ServerConfig{
-			Port: getEnv("PORT", "8080"),
-			Mode: getEnv("GIN_MODE", "debug"),
+			Port: "8080",
+			Mode: "debug",
 		},
 		Database: DatabaseConfig{
-			Host:     getEnv("DB_HOST", "localhost"),
-			Port:     getEnvInt("DB_PORT", 5432),
-			User:     getEnv("DB_USER", "freedomcry"),
-			Password: getEnv("DB_PASSWORD", "freedomcry_secret"),
-			DBName:   getEnv("DB_NAME", "freedomcry_db"),
-			SSLMode:  getEnv("DB_SSLMODE", "disable"),
+			Host:     "localhost",
+			Port:     5432,
+			User:     "freedomcry",
+			Password: "freedomcry_secret",
+			DBName:   "freedomcry_db",
+			SSLMode:  "disable",
 		},
 		Redis: RedisConfig{
-			Addr:     getEnv("REDIS_ADDR", "localhost:6379"),
-			Password: getEnv("REDIS_PASSWORD", ""),
-			DB:       getEnvInt("REDIS_DB", 0),
+			Addr:     "localhost:6379",
+			Password: "",
+			DB:       0,
 		},
 		JWT: JWTConfig{
-			Secret: getEnv("JWT_SECRET", "freedom-cry-super-secure-jwt-secret-change-in-prod"),
+			Secret: "freedom-cry-super-secure-jwt-secret-change-in-prod",
 			Expiry: 72 * time.Hour,
 		},
 		App: AppConfig{
-			BaseURL:    getEnv("BASE_URL", "http://localhost:8080"),
-			NodeSecret: getEnv("NODE_SECRET", "fc-node-secret-token-key-2026"),
-			DefaultDNS: getEnv("DEFAULT_DNS", "1.1.1.1, 8.8.8.8"),
+			BaseURL:    "http://localhost:8080",
+			NodeSecret: "fc-node-secret-token-key-2026",
+			DefaultDNS: "1.1.1.1, 8.8.8.8",
 		},
 	}
 
-	// Try reading YAML config if exists
+	// 1. Read YAML config if exists
 	if path != "" {
 		if data, err := os.ReadFile(path); err == nil {
 			_ = yaml.Unmarshal(data, cfg)
 		}
+	}
+
+	// 2. Environment variables OVERRIDE YAML
+	if val := os.Getenv("PORT"); val != "" {
+		cfg.Server.Port = val
+	}
+	if val := os.Getenv("GIN_MODE"); val != "" {
+		cfg.Server.Mode = val
+	}
+	if val := os.Getenv("DB_HOST"); val != "" {
+		cfg.Database.Host = val
+	}
+	if val := os.Getenv("DB_PORT"); val != "" {
+		if p, err := strconv.Atoi(val); err == nil {
+			cfg.Database.Port = p
+		}
+	}
+	if val := os.Getenv("DB_USER"); val != "" {
+		cfg.Database.User = val
+	}
+	if val := os.Getenv("DB_PASSWORD"); val != "" {
+		cfg.Database.Password = val
+	}
+	if val := os.Getenv("DB_NAME"); val != "" {
+		cfg.Database.DBName = val
+	}
+	if val := os.Getenv("DB_SSLMODE"); val != "" {
+		cfg.Database.SSLMode = val
+	}
+	if val := os.Getenv("REDIS_ADDR"); val != "" {
+		cfg.Redis.Addr = val
+	}
+	if val := os.Getenv("REDIS_PASSWORD"); val != "" {
+		cfg.Redis.Password = val
+	}
+	if val := os.Getenv("REDIS_DB"); val != "" {
+		if d, err := strconv.Atoi(val); err == nil {
+			cfg.Redis.DB = d
+		}
+	}
+	if val := os.Getenv("JWT_SECRET"); val != "" {
+		cfg.JWT.Secret = val
+	}
+	if val := os.Getenv("BASE_URL"); val != "" {
+		cfg.App.BaseURL = val
+	}
+	if val := os.Getenv("NODE_SECRET"); val != "" {
+		cfg.App.NodeSecret = val
+	}
+	if val := os.Getenv("DEFAULT_DNS"); val != "" {
+		cfg.App.DefaultDNS = val
 	}
 
 	return cfg, nil
