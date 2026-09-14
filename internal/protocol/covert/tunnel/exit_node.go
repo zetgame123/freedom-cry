@@ -65,6 +65,11 @@ func (n *ExitNode) handleIncomingFrameBytes(raw []byte) {
 		return
 	}
 
+	// Ignore echo frames sent by server (including self)
+	if frame.Direction == covert.DirServerToClient {
+		return
+	}
+
 	switch frame.Cmd {
 	case covert.CmdConnect:
 		target := string(frame.Payload)
@@ -83,7 +88,11 @@ func (n *ExitNode) handleIncomingFrameBytes(raw []byte) {
 		n.closeStream(frame.StreamID)
 
 	case covert.CmdPing:
-		pongFrame := covert.Frame{StreamID: frame.StreamID, Cmd: covert.CmdPong}
+		pongFrame := covert.Frame{
+			StreamID:  frame.StreamID,
+			Cmd:       covert.CmdPong,
+			Direction: covert.DirServerToClient,
+		}
 		n.sendFrame(pongFrame)
 	}
 }
@@ -93,7 +102,11 @@ func (n *ExitNode) handleConnect(streamID uint32, target string) {
 	conn, err := dialer.Dial("tcp", target)
 	if err != nil {
 		log.Printf("[ExitNode] Dial %s failed: %v", target, err)
-		closeFrame := covert.Frame{StreamID: streamID, Cmd: covert.CmdClose}
+		closeFrame := covert.Frame{
+			StreamID:  streamID,
+			Cmd:       covert.CmdClose,
+			Direction: covert.DirServerToClient,
+		}
 		n.sendFrame(closeFrame)
 		return
 	}
@@ -113,9 +126,10 @@ func (n *ExitNode) handleConnect(streamID uint32, target string) {
 			nr, err := conn.Read(buf)
 			if nr > 0 {
 				dataFrame := covert.Frame{
-					StreamID: streamID,
-					Cmd:      covert.CmdData,
-					Payload:  buf[:nr],
+					StreamID:  streamID,
+					Cmd:       covert.CmdData,
+					Direction: covert.DirServerToClient,
+					Payload:   buf[:nr],
 				}
 				if err := n.sendFrame(dataFrame); err != nil {
 					return
@@ -139,12 +153,17 @@ func (n *ExitNode) closeStream(streamID uint32) {
 
 	if exists && conn != nil {
 		_ = conn.Close()
-		closeFrame := covert.Frame{StreamID: streamID, Cmd: covert.CmdClose}
+		closeFrame := covert.Frame{
+			StreamID:  streamID,
+			Cmd:       covert.CmdClose,
+			Direction: covert.DirServerToClient,
+		}
 		_ = n.sendFrame(closeFrame)
 	}
 }
 
 func (n *ExitNode) sendFrame(f covert.Frame) error {
+	f.Direction = covert.DirServerToClient
 	raw := covert.EncodeFrame(f)
 	encrypted, err := n.cipher.Encrypt(raw)
 	if err != nil {

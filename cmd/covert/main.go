@@ -21,10 +21,11 @@ func main() {
 	secretKey := flag.String("key", "freedom-cry-covert-secret-2026-key", "32-byte pre-shared encryption key")
 
 	// Yandex Docs flags
-	docURL := flag.String("ydoc-url", "", "Yandex Docs document URL")
-	docWS := flag.String("ydoc-ws", "wss://doc.yandex.ru/websocket", "Yandex Docs WebSocket URL")
-	docID := flag.String("ydoc-id", "freedom-cry-emergency-doc", "Yandex Doc ID")
-	docToken := flag.String("ydoc-token", "anonymous", "Yandex Doc session token")
+	docURL := flag.String("ydoc-url", "", "Yandex Docs document URL (e.g. https://docs.yandex.ru/docs/view?url=...)")
+	docCookie := flag.String("ydoc-cookie", "", "Yandex session cookie string (optional, for auth or captcha bypass)")
+	docWS := flag.String("ydoc-ws", "", "Yandex Docs WebSocket URL (optional manual override)")
+	docID := flag.String("ydoc-id", "", "Yandex Doc ID (optional manual override)")
+	docToken := flag.String("ydoc-token", "", "Yandex Doc session token (optional manual override)")
 
 	// Cups.online flags
 	roomUUID := flag.String("room", "freedom-cry-emergency-room", "Cups.online Room UUID")
@@ -39,7 +40,13 @@ func main() {
 	var tr covert.Transport
 	switch *transportType {
 	case "yandex":
-		tr = yandex.NewTransport(*docURL, *docWS, *docID, *docToken)
+		tr = yandex.NewTransport(yandex.Config{
+			DocURL:    *docURL,
+			CookieStr: *docCookie,
+			WsURL:     *docWS,
+			DocID:     *docID,
+			Token:     *docToken,
+		})
 	case "cups":
 		tr = cups.NewTransport(*roomUUID)
 	default:

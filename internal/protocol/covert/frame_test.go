@@ -7,9 +7,10 @@ import (
 
 func TestEncodeDecodeFrame(t *testing.T) {
 	orig := Frame{
-		StreamID: 42,
-		Cmd:      CmdConnect,
-		Payload:  []byte("api.telegram.org:443"),
+		StreamID:  42,
+		Cmd:       CmdConnect,
+		Direction: DirClientToServer,
+		Payload:   []byte("api.telegram.org:443"),
 	}
 
 	encoded := EncodeFrame(orig)
@@ -23,6 +24,9 @@ func TestEncodeDecodeFrame(t *testing.T) {
 	}
 	if decoded.Cmd != orig.Cmd {
 		t.Errorf("expected Cmd %d, got %d", orig.Cmd, decoded.Cmd)
+	}
+	if decoded.Direction != orig.Direction {
+		t.Errorf("expected Direction %d, got %d", orig.Direction, decoded.Direction)
 	}
 	if !bytes.Equal(decoded.Payload, orig.Payload) {
 		t.Errorf("payload mismatch: %s vs %s", string(decoded.Payload), string(orig.Payload))

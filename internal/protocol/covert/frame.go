@@ -21,45 +21,57 @@ const (
 	CmdPong    Command = 5 // Keep-alive pong
 )
 
+type Direction byte
+
+const (
+	DirUnknown        Direction = 0
+	DirClientToServer Direction = 1 // Sent from client (SOCKS5/TUN) to server
+	DirServerToClient Direction = 2 // Sent from server (ExitNode) to client
+)
+
 // Frame represents a multiplexed unit of data over the covert transport
 type Frame struct {
-	StreamID uint32
-	Cmd      Command
-	Payload  []byte
+	StreamID  uint32
+	Cmd       Command
+	Direction Direction
+	Payload   []byte
 }
 
 // EncodeFrame serializes a Frame into bytes:
-// [4 bytes StreamID] [1 byte Cmd] [2 bytes PayloadLen] [Payload bytes...]
+// [4 bytes StreamID] [1 byte Cmd] [1 byte Direction] [2 bytes PayloadLen] [Payload bytes...]
 func EncodeFrame(f Frame) []byte {
-	buf := make([]byte, 7+len(f.Payload))
+	buf := make([]byte, 8+len(f.Payload))
 	binary.BigEndian.PutUint32(buf[0:4], f.StreamID)
 	buf[4] = byte(f.Cmd)
-	binary.BigEndian.PutUint16(buf[5:7], uint16(len(f.Payload)))
-	copy(buf[7:], f.Payload)
+	buf[5] = byte(f.Direction)
+	binary.BigEndian.PutUint16(buf[6:8], uint16(len(f.Payload)))
+	copy(buf[8:], f.Payload)
 	return buf
 }
 
 // DecodeFrame deserializes a Frame from raw bytes
 func DecodeFrame(data []byte) (*Frame, error) {
-	if len(data) < 7 {
+	if len(data) < 8 {
 		return nil, errors.New("frame data too short")
 	}
 
 	streamID := binary.BigEndian.Uint32(data[0:4])
 	cmd := Command(data[4])
-	payloadLen := binary.BigEndian.Uint16(data[5:7])
+	dir := Direction(data[5])
+	payloadLen := binary.BigEndian.Uint16(data[6:8])
 
-	if len(data) < int(7+payloadLen) {
+	if len(data) < int(8+payloadLen) {
 		return nil, errors.New("incomplete frame payload")
 	}
 
 	payload := make([]byte, payloadLen)
-	copy(payload, data[7:7+payloadLen])
+	copy(payload, data[8:8+payloadLen])
 
 	return &Frame{
-		StreamID: streamID,
-		Cmd:      cmd,
-		Payload:  payload,
+		StreamID:  streamID,
+		Cmd:       cmd,
+		Direction: dir,
+		Payload:   payload,
 	}, nil
 }
 

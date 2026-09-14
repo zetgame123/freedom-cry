@@ -185,9 +185,10 @@ func (c *SOCKS5ClientTunnel) handleSOCKS5Connection(conn net.Conn) {
 
 	// Send CmdConnect frame
 	connectFrame := covert.Frame{
-		StreamID: streamID,
-		Cmd:      covert.CmdConnect,
-		Payload:  []byte(target),
+		StreamID:  streamID,
+		Cmd:       covert.CmdConnect,
+		Direction: covert.DirClientToServer,
+		Payload:   []byte(target),
 	}
 	if err := c.sendFrame(connectFrame); err != nil {
 		log.Printf("[Covert Client] Failed to send connect frame: %v", err)
@@ -202,9 +203,10 @@ func (c *SOCKS5ClientTunnel) handleSOCKS5Connection(conn net.Conn) {
 		nr, err := conn.Read(buf)
 		if nr > 0 {
 			dataFrame := covert.Frame{
-				StreamID: streamID,
-				Cmd:      covert.CmdData,
-				Payload:  buf[:nr],
+				StreamID:  streamID,
+				Cmd:       covert.CmdData,
+				Direction: covert.DirClientToServer,
+				Payload:   buf[:nr],
 			}
 			if err := c.sendFrame(dataFrame); err != nil {
 				return
@@ -224,6 +226,11 @@ func (c *SOCKS5ClientTunnel) handleIncomingFrameBytes(raw []byte) {
 
 	frame, err := covert.DecodeFrame(decrypted)
 	if err != nil {
+		return
+	}
+
+	// Ignore echo frames sent by clients (including self)
+	if frame.Direction == covert.DirClientToServer {
 		return
 	}
 
@@ -250,12 +257,17 @@ func (c *SOCKS5ClientTunnel) closeStream(streamID uint32) {
 
 	if exists && conn != nil {
 		_ = conn.Close()
-		closeFrame := covert.Frame{StreamID: streamID, Cmd: covert.CmdClose}
+		closeFrame := covert.Frame{
+			StreamID:  streamID,
+			Cmd:       covert.CmdClose,
+			Direction: covert.DirClientToServer,
+		}
 		_ = c.sendFrame(closeFrame)
 	}
 }
 
 func (c *SOCKS5ClientTunnel) sendFrame(f covert.Frame) error {
+	f.Direction = covert.DirClientToServer
 	raw := covert.EncodeFrame(f)
 	encrypted, err := c.cipher.Encrypt(raw)
 	if err != nil {
