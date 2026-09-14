@@ -202,6 +202,10 @@ if [[ -f "./agent" ]]; then
     # Local installation from source folder
     cp ./agent "$AGENT_BIN"
     chmod +x "$AGENT_BIN"
+elif command -v docker >/dev/null 2>&1; then
+    echo -e "${CYAN}Сборка агента через Docker...${NC}"
+    docker run --rm -v "$(pwd)":/app -w /app golang:alpine go build -ldflags="-w -s" -o /opt/freedom-cry/agent ./cmd/agent
+    chmod +x "$AGENT_BIN"
 else
     # Download from API master or build via Go
     echo -e "Загрузка бинарника agent с мастер-сервера..."
@@ -209,13 +213,7 @@ else
         echo -e "${CYAN}Мастер не отдает бинарник напрямую, проверяем наличие Go...${NC}"
         if command -v go >/dev/null 2>&1; then
             echo -e "Компиляция агента на лету через Go..."
-            git clone --depth 1 https://github.com/freedom-cry/backend /tmp/fc-build 2>/dev/null || true
-            if [[ -d "/tmp/fc-build" ]]; then
-                cd /tmp/fc-build
-                go build -o "$AGENT_BIN" ./cmd/agent
-                cd - >/dev/null
-                rm -rf /tmp/fc-build
-            fi
+            go build -o "$AGENT_BIN" ./cmd/agent
         fi
     fi
 fi
