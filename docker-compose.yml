@@ -52,7 +52,7 @@ services:
       DB_NAME: "freedomcry_db"
       DB_SSLMODE: "disable"
       REDIS_ADDR: "redis:6379"
-      BASE_URL: "http://localhost:8080"
+      BASE_URL: "${BASE_URL:-http://127.0.0.1:8080}"
       NODE_SECRET: "fc-node-secret-token-key-2026"
       JWT_SECRET: "freedom-cry-super-secure-jwt-secret-change-in-prod"
     ports:
