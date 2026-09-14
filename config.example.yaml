@@ -1,0 +1,25 @@
+server:
+  port: "8080"
+  mode: "debug" # "debug" or "release"
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "freedomcry"
+  password: "freedomcry_secret"
+  dbname: "freedomcry_db"
+  sslmode: "disable"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+jwt:
+  secret: "freedom-cry-super-secure-jwt-secret-change-in-prod"
+  expiry: 72h
+
+app:
+  base_url: "http://localhost:8080"
+  node_secret: "fc-node-secret-token-key-2026"
+  default_dns: "1.1.1.1, 8.8.8.8"
