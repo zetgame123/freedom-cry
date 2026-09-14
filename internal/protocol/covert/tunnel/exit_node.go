@@ -76,7 +76,7 @@ func (n *ExitNode) handleIncomingFrameBytes(raw []byte) {
 		}
 
 	case covert.CmdClose:
-		n.closeStream(frame.StreamID)
+		n.closeStreamLocalOnly(frame.StreamID)
 
 	case covert.CmdPing:
 		_ = n.sendFrame(frame.StreamID, covert.CmdPong, nil)
@@ -84,10 +84,16 @@ func (n *ExitNode) handleIncomingFrameBytes(raw []byte) {
 }
 
 func (n *ExitNode) handleConnect(streamID uint32, target string) {
-	// 1. Enforce stream count limits
+	// 1. Enforce stream count limits and reject duplicate stream IDs
 	n.mu.RLock()
+	_, inUse := n.streams[streamID]
 	streamCount := len(n.streams)
 	n.mu.RUnlock()
+
+	if inUse {
+		log.Printf("[ExitNode] Stream %d already active, rejecting duplicate connect", streamID)
+		return
+	}
 
 	if streamCount >= MaxConcurrentStreams {
 		log.Printf("[ExitNode] Max concurrent streams reached (%d), rejecting %s", MaxConcurrentStreams, target)
@@ -107,6 +113,9 @@ func (n *ExitNode) handleConnect(streamID uint32, target string) {
 	}
 
 	n.mu.Lock()
+	if existing, exists := n.streams[streamID]; exists && existing != nil {
+		_ = existing.Close()
+	}
 	n.streams[streamID] = conn
 	n.mu.Unlock()
 
@@ -143,6 +152,17 @@ func (n *ExitNode) closeStream(streamID uint32) {
 	if exists && conn != nil {
 		_ = conn.Close()
 		_ = n.sendFrame(streamID, covert.CmdClose, nil)
+	}
+}
+
+func (n *ExitNode) closeStreamLocalOnly(streamID uint32) {
+	n.mu.Lock()
+	conn, exists := n.streams[streamID]
+	delete(n.streams, streamID)
+	n.mu.Unlock()
+
+	if exists && conn != nil {
+		_ = conn.Close()
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -293,7 +294,9 @@ func signAndAuthenticateRequest(req *http.Request, nodeID, token, privKeyHex str
 		privKeyBytes, err := hex.DecodeString(privKeyHex)
 		if err == nil && len(privKeyBytes) == ed25519.PrivateKeySize {
 			tsStr := strconv.FormatInt(time.Now().Unix(), 10)
-			msg := fmt.Sprintf("FC-NODE-AUTH:%s:%s:%s:%s", nodeID, tsStr, req.Method, req.URL.Path)
+			bodyHash := sha256.Sum256(body)
+			bodyHashHex := hex.EncodeToString(bodyHash[:])
+			msg := fmt.Sprintf("FC-NODE-AUTH:%s:%s:%s:%s:%s", nodeID, tsStr, req.Method, req.URL.Path, bodyHashHex)
 			sig := ed25519.Sign(privKeyBytes, []byte(msg))
 
 			req.Header.Set("X-Node-Timestamp", tsStr)

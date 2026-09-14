@@ -72,7 +72,7 @@ services:
       - freedomcry-net
     ports:
       # API listener (reverse-proxied via Nginx/Caddy/Cloudflare with TLS in production)
-      - "8080:8080"
+      - "${API_BIND_ADDR:-127.0.0.1}:8080:8080"
 
 networks:
   freedomcry-net:

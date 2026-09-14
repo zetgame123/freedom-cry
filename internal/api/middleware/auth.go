@@ -1,16 +1,19 @@
 package middleware
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"freedom-cry/internal/config"
@@ -21,6 +24,29 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+var (
+	nodeSigCacheMu sync.Mutex
+	nodeSigCache   = make(map[string]int64)
+)
+
+func checkAndRecordSig(sig string, now int64) bool {
+	nodeSigCacheMu.Lock()
+	defer nodeSigCacheMu.Unlock()
+
+	cutoff := now - 70
+	for k, t := range nodeSigCache {
+		if t < cutoff {
+			delete(nodeSigCache, k)
+		}
+	}
+
+	if _, exists := nodeSigCache[sig]; exists {
+		return false
+	}
+	nodeSigCache[sig] = now
+	return true
+}
 
 const (
 	ContextUserID              = "userID"
@@ -132,9 +158,16 @@ func RequireNodeAuth(db *gorm.DB) gin.HandlerFunc {
 				return
 			}
 
+			now := time.Now().Unix()
 			// Reject timestamps older than 60 seconds to prevent replay attacks
-			if math.Abs(float64(time.Now().Unix()-ts)) > 60 {
+			if math.Abs(float64(now-ts)) > 60 {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "timestamp expired or out of sync"})
+				return
+			}
+
+			// Prevent replay attack within the 60-second window
+			if !checkAndRecordSig(sigHeader, now) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "replay attack detected: signature already used"})
 				return
 			}
 
@@ -150,8 +183,17 @@ func RequireNodeAuth(db *gorm.DB) gin.HandlerFunc {
 				return
 			}
 
-			// Expected payload: FC-NODE-AUTH:<nodeID>:<timestamp>:<method>:<path>
-			msg := fmt.Sprintf("FC-NODE-AUTH:%s:%s:%s:%s", node.ID.String(), tsHeader, c.Request.Method, c.Request.URL.Path)
+			// Read and restore request body to bind signature to payload
+			var bodyBytes []byte
+			if c.Request.Body != nil {
+				bodyBytes, _ = io.ReadAll(c.Request.Body)
+				c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+			}
+			bodyHash := sha256.Sum256(bodyBytes)
+			bodyHashHex := hex.EncodeToString(bodyHash[:])
+
+			// Expected payload: FC-NODE-AUTH:<nodeID>:<timestamp>:<method>:<path>:<bodyHashHex>
+			msg := fmt.Sprintf("FC-NODE-AUTH:%s:%s:%s:%s:%s", node.ID.String(), tsHeader, c.Request.Method, c.Request.URL.Path, bodyHashHex)
 			if !ed25519.Verify(pubKeyBytes, []byte(msg), sigBytes) {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "cryptographic signature verification failed"})
 				return
@@ -162,9 +204,14 @@ func RequireNodeAuth(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// 2. Unique per-node secret token authentication
+		// 2. Initial enrollment token authentication (ONLY allowed if node has not registered an Ed25519 key yet)
 		nodeToken := c.GetHeader("X-Node-Token")
 		if nodeToken != "" && node.AuthTokenHash != "" {
+			if node.PublicKey != "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token authentication disabled: node must authenticate via Ed25519 signature"})
+				return
+			}
+
 			tokenHash := sha256.Sum256([]byte(nodeToken))
 			tokenHashHex := hex.EncodeToString(tokenHash[:])
 

@@ -185,13 +185,20 @@ iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -o "$WAN_IFACE" -j MASQUERADE
 iptables -C FORWARD -s 10.8.0.0/16 -d 10.8.0.0/16 -j DROP 2>/dev/null || \
 iptables -I FORWARD 1 -s 10.8.0.0/16 -d 10.8.0.0/16 -j DROP
 
-# 2. SECURITY: Block client access to cloud metadata (169.254.169.254)
-iptables -C FORWARD -s 10.8.0.0/16 -d 169.254.169.254 -j DROP 2>/dev/null || \
-iptables -I FORWARD 2 -s 10.8.0.0/16 -d 169.254.169.254 -j DROP
+# 2. SECURITY: Block client access to cloud metadata and link-local ranges (169.254.0.0/16)
+iptables -C FORWARD -s 10.8.0.0/16 -d 169.254.0.0/16 -j DROP 2>/dev/null || \
+iptables -I FORWARD 2 -s 10.8.0.0/16 -d 169.254.0.0/16 -j DROP
 
-# 3. SECURITY: Block client access to sensitive host management services
-iptables -C INPUT -s 10.8.0.0/16 -p tcp -m multiport --dports 22,5432,6379,8080 -j DROP 2>/dev/null || \
-iptables -I INPUT 1 -s 10.8.0.0/16 -p tcp -m multiport --dports 22,5432,6379,8080 -j DROP
+# 3. SECURITY: Strict Host Isolation - VPN clients can ONLY contact the host for DNS (port 53).
+# All other host ports (SSH, Docker, Prometheus, internal services) are strictly BLOCKED.
+iptables -C INPUT -s 10.8.0.0/16 -p udp --dport 53 -j ACCEPT 2>/dev/null || \
+iptables -I INPUT 1 -s 10.8.0.0/16 -p udp --dport 53 -j ACCEPT
+iptables -C INPUT -s 10.8.0.0/16 -p tcp --dport 53 -j ACCEPT 2>/dev/null || \
+iptables -I INPUT 2 -s 10.8.0.0/16 -p tcp --dport 53 -j ACCEPT
+iptables -C INPUT -s 10.8.0.0/16 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+iptables -I INPUT 3 -s 10.8.0.0/16 -m state --state RELATED,ESTABLISHED -j ACCEPT
+iptables -C INPUT -s 10.8.0.0/16 -j DROP 2>/dev/null || \
+iptables -A INPUT -s 10.8.0.0/16 -j DROP
 
 # 4. SECURITY: Prevent IPv6 traffic leakage
 ip6tables -P FORWARD DROP 2>/dev/null || true
@@ -300,18 +307,32 @@ if [[ "$ENABLE_COVERT" == "true" ]]; then
         chmod +x "$COVERT_BIN"
     fi
 
-    cat > /etc/systemd/system/freedom-cry-covert.service << EOF
+    cat > /etc/systemd/system/freedom-cry-covert.service << 'EOF'
 [Unit]
-Description=Freedom Cry Covert Whitelist Exit Node
+Description=Freedom Cry Covert Whitelist Exit Node (Hardened)
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/freedom-cry
-ExecStart=/opt/freedom-cry/covert --mode exit --transport cups --room "${NODE_ID}" --key "${NODE_SECRET}"
+EnvironmentFile=/etc/freedom-cry/agent.env
+ExecStart=/bin/sh -c 'exec /opt/freedom-cry/covert --mode exit --transport cups --room "$FC_NODE_ID" --key "$FC_NODE_SECRET"'
 Restart=always
 RestartSec=5
+
+# Systemd Sandboxing & Privilege Hardening Directives
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ReadWritePaths=/opt/freedom-cry
 
 [Install]
 WantedBy=multi-user.target

@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -116,16 +117,35 @@ func (d *SafeDialer) DialContext(ctx context.Context, network, address string) (
 		validatedIPs = append(validatedIPs, ip)
 	}
 
-	// Anti-DNS-Rebinding: Connect directly to the first validated IP address
-	targetIP := validatedIPs[0]
-	dialTarget := net.JoinHostPort(targetIP.String(), portStr)
+	// Anti-DNS-Rebinding & Resilience:
+	// 1. Iterate over validated IPs so that dual-stack or multi-homed destinations have fallback.
+	// 2. Connect directly to numeric IP address.
+	// 3. Use Control socket hook to verify the sockaddr at the OS kernel connect() syscall.
+	var lastErr error
+	for _, targetIP := range validatedIPs {
+		dialTarget := net.JoinHostPort(targetIP.String(), portStr)
+		dialer := net.Dialer{
+			Timeout:   d.Timeout,
+			KeepAlive: 30 * time.Second,
+			Control: func(network, address string, c syscall.RawConn) error {
+				h, _, err := net.SplitHostPort(address)
+				if err == nil {
+					if parsedIP := net.ParseIP(h); parsedIP != nil {
+						return ValidateIP(parsedIP)
+					}
+				}
+				return nil
+			},
+		}
 
-	dialer := net.Dialer{
-		Timeout:   d.Timeout,
-		KeepAlive: 30 * time.Second,
+		conn, err := dialer.DialContext(ctx, network, dialTarget)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
 	}
 
-	return dialer.DialContext(ctx, network, dialTarget)
+	return nil, fmt.Errorf("connection to validated addresses for %s failed: %w", host, lastErr)
 }
 
 // ValidateIP returns an error if the provided IP address is in any restricted, private,

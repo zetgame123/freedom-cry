@@ -236,7 +236,7 @@ func (c *SOCKS5ClientTunnel) handleIncomingFrameBytes(raw []byte) {
 		}
 
 	case covert.CmdClose:
-		c.closeStream(frame.StreamID)
+		c.closeStreamLocalOnly(frame.StreamID)
 	}
 }
 
@@ -249,6 +249,17 @@ func (c *SOCKS5ClientTunnel) closeStream(streamID uint32) {
 	if exists && conn != nil {
 		_ = conn.Close()
 		_ = c.sendFrame(streamID, covert.CmdClose, nil)
+	}
+}
+
+func (c *SOCKS5ClientTunnel) closeStreamLocalOnly(streamID uint32) {
+	c.mu.Lock()
+	conn, exists := c.streams[streamID]
+	delete(c.streams, streamID)
+	c.mu.Unlock()
+
+	if exists && conn != nil {
+		_ = conn.Close()
 	}
 }
 
