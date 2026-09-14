@@ -200,7 +200,9 @@ AGENT_BIN="/opt/freedom-cry/agent"
 
 if [[ -f "./agent" ]]; then
     # Local installation from source folder
-    cp ./agent "$AGENT_BIN"
+    if [[ "$(realpath ./agent)" != "$(realpath "$AGENT_BIN")" ]]; then
+        cp ./agent "$AGENT_BIN"
+    fi
     chmod +x "$AGENT_BIN"
 elif command -v docker >/dev/null 2>&1; then
     echo -e "${CYAN}Сборка агента через Docker...${NC}"
