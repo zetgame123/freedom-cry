@@ -14,6 +14,8 @@ import (
 	"freedom-cry/internal/api/handler"
 	"freedom-cry/internal/protocol/amneziawg"
 	"freedom-cry/internal/protocol/xray"
+
+	"github.com/google/uuid"
 )
 
 type AgentConfig struct {
@@ -59,7 +61,13 @@ func main() {
 }
 
 func syncNode(apiURL, nodeID, secret, xrayPath, awgPath string, dryRun bool) error {
+	nodeUUID, err := uuid.Parse(nodeID)
+	if err != nil {
+		return fmt.Errorf("invalid node uuid: %w", err)
+	}
+
 	syncReq := handler.NodeSyncRequest{
+		NodeID:      nodeUUID,
 		LoadPercent: getSystemLoad(),
 	}
 
@@ -106,9 +114,14 @@ func syncNode(apiURL, nodeID, secret, xrayPath, awgPath string, dryRun bool) err
 			})
 		}
 
+		privKey := syncResp.RealityPrivateKey
+		if privKey == "" {
+			privKey = syncResp.Node.RealityPrivKey
+		}
+
 		xrayJSON, err := xray.GenerateServerConfig(
 			syncResp.Node.VlessPort,
-			syncResp.Node.RealityPrivKey,
+			privKey,
 			syncResp.Node.RealityServerName,
 			[]string{syncResp.Node.RealityShortID},
 			xrayClients,
@@ -131,8 +144,13 @@ func syncNode(apiURL, nodeID, secret, xrayPath, awgPath string, dryRun bool) err
 			})
 		}
 
+		awgPrivKey := syncResp.AwgPrivateKey
+		if awgPrivKey == "" {
+			awgPrivKey = syncResp.Node.AwgPrivKey
+		}
+
 		awgConf, err := amneziawg.GenerateServerConfig(amneziawg.ServerConfigParams{
-			ServerPrivateKey: syncResp.Node.AwgPrivKey,
+			ServerPrivateKey: awgPrivKey,
 			ListenPort:       syncResp.Node.AwgPort,
 			Address:          syncResp.Node.AwgServerSubnet,
 			Jc:               syncResp.Node.AwgJc,

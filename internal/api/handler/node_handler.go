@@ -76,9 +76,11 @@ type NodeSyncRequest struct {
 }
 
 type NodeSyncResponse struct {
-	Node         models.ServerNode `json:"node"`
-	VlessClients []VlessClientSync `json:"vless_clients"`
-	AwgPeers     []AwgPeerSync     `json:"awg_peers"`
+	Node              models.ServerNode `json:"node"`
+	RealityPrivateKey string            `json:"reality_private_key"`
+	AwgPrivateKey     string            `json:"awg_private_key"`
+	VlessClients      []VlessClientSync `json:"vless_clients"`
+	AwgPeers          []AwgPeerSync     `json:"awg_peers"`
 }
 
 type VlessClientSync struct {
@@ -142,8 +144,10 @@ func (h *NodeHandler) NodeSync(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, NodeSyncResponse{
-		Node:         node,
-		VlessClients: vlessClients,
-		AwgPeers:     awgPeers,
+		Node:              node,
+		RealityPrivateKey: node.RealityPrivKey,
+		AwgPrivateKey:     node.AwgPrivKey,
+		VlessClients:      vlessClients,
+		AwgPeers:          awgPeers,
 	})
 }
