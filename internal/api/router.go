@@ -62,6 +62,18 @@ func SetupRouter(
 		subGroup.GET("/:token/info", configH.GetSubInfo)
 	}
 
+	// Binary downloads for node setup (protected by X-Node-Secret)
+	downloadGroup := r.Group("/download")
+	downloadGroup.Use(middleware.RequireNodeSecret(cfg))
+	{
+		downloadGroup.GET("/agent", func(c *gin.Context) {
+			c.FileAttachment("./agent", "agent")
+		})
+		downloadGroup.GET("/covert", func(c *gin.Context) {
+			c.FileAttachment("./covert", "covert")
+		})
+	}
+
 	// API v1
 	v1 := r.Group("/api/v1")
 	{
