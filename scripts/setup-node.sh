@@ -204,7 +204,8 @@ if [[ -f "./agent" ]]; then
     chmod +x "$AGENT_BIN"
 elif command -v docker >/dev/null 2>&1; then
     echo -e "${CYAN}Сборка агента через Docker...${NC}"
-    docker run --rm -v "$(pwd)":/app -w /app golang:alpine go build -ldflags="-w -s" -o /opt/freedom-cry/agent ./cmd/agent
+    docker run --rm -v "$(pwd)":/app -w /app golang:alpine go build -ldflags="-w -s" -o /app/agent ./cmd/agent
+    cp ./agent "$AGENT_BIN"
     chmod +x "$AGENT_BIN"
 else
     # Download from API master or build via Go
