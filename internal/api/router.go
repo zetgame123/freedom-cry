@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"time"
 
 	"freedom-cry/internal/api/handler"
@@ -20,6 +21,9 @@ func SetupRouter(
 	nodeServ *service.NodeService,
 	subServ *service.SubscriptionService,
 	billingServ *service.BillingService,
+	blindServ *service.BlindTokenService,
+	multiHopServ *service.MultiHopService,
+	autoHealingServ *service.AutoHealingService,
 ) *gin.Engine {
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -53,7 +57,7 @@ func SetupRouter(
 			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 		c.Writer.Header().Set("Vary", "Origin")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Node-ID, X-Node-Token, X-Node-Timestamp, X-Node-Signature")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Node-ID, X-Node-Token, X-Node-Timestamp, X-Node-Signature, X-Probe-Secret")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 
 		if c.Request.Method == "OPTIONS" {
@@ -70,6 +74,9 @@ func SetupRouter(
 	nodeH := handler.NewNodeHandler(nodeServ, db)
 	billingH := handler.NewBillingHandler(billingServ, db)
 	configH := handler.NewConfigHandler(subServ, cfg)
+	blindH := handler.NewBlindHandler(blindServ)
+	routeH := handler.NewRouteHandler(multiHopServ)
+	probeH := handler.NewProbeHandler(db, nodeServ, autoHealingServ, os.Getenv("PROBE_SECRET"))
 
 	// Health check
 	r.GET("/health", func(c *gin.Context) {
@@ -84,6 +91,8 @@ func SetupRouter(
 		subGroup.GET("/:token/awg/:node_id", configH.GetAmneziaWGConfig)
 		subGroup.POST("/:token/awg/:node_id/pubkey", configH.RegisterClientPubKey)
 		subGroup.GET("/:token/info", configH.GetSubInfo)
+		// Phase 2: Multi-Hop dynamic sing-box chained subscription
+		subGroup.GET("/:token/chain/:entry_id/:exit_id", routeH.GetChainedConfig)
 	}
 
 	// API v1
@@ -96,10 +105,29 @@ func SetupRouter(
 		{
 			authGroup.POST("/register", authH.Register)
 			authGroup.POST("/login", authH.Login)
+			// Phase 1: Zero-Knowledge Anonymous 16-digit Account registration & login
+			authGroup.POST("/account/register", authH.AccountRegister)
+			authGroup.POST("/account/login", authH.AccountLogin)
 		}
 
 		// Public Plans
 		v1.GET("/plans", userH.GetPlans)
+
+		// Phase 1: Blind Token / Privacy Pass Endpoints
+		blindGroup := v1.Group("/blind")
+		{
+			blindGroup.GET("/public-key", blindH.GetPublicKey)
+			blindGroup.POST("/redeem", blindH.RedeemToken) // Unauthenticated / Zero-Knowledge
+		}
+		// Blind Token Signing (requires authenticated active user session)
+		v1.POST("/blind/sign", middleware.AuthMiddleware(cfg), blindH.SignBlindedToken)
+
+		// Phase 2: Multi-Hop Available Chains
+		v1.GET("/routes/chains", routeH.ListChains)
+
+		// Phase 4: Fleet Sensor Probing Endpoints
+		v1.GET("/node/probe-targets", probeH.GetProbeTargets)
+		v1.POST("/node/probe-report", probeH.SubmitProbeReport)
 
 		// Node Agent Sync endpoints (Protected by cryptographic per-node identity verification)
 		nodeAgentGroup := v1.Group("/node")

@@ -50,6 +50,7 @@ func Connect(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 		&models.Subscription{},
 		&models.ClientKey{},
 		&models.Transaction{},
+		&models.RedeemedBlindToken{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}

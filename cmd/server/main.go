@@ -16,6 +16,7 @@ import (
 	"freedom-cry/internal/config"
 	"freedom-cry/internal/database"
 	"freedom-cry/internal/service"
+	"freedom-cry/internal/service/cloud"
 )
 
 func main() {
@@ -50,8 +51,26 @@ func main() {
 	subServ := service.NewSubscriptionService(db, cfg)
 	billingServ := service.NewBillingService(db, subServ)
 
+	blindServ, err := service.NewBlindTokenService(db)
+	if err != nil {
+		log.Fatalf("[BlindToken] Failed to initialize service: %v", err)
+	}
+	multiHopServ := service.NewMultiHopService(db, subServ)
+
+	// Auto-healing service with Hetzner or Mock cloud provider
+	var cloudProv cloud.CloudProvider
+	if hetznerToken := os.Getenv("HETZNER_API_TOKEN"); hetznerToken != "" {
+		cloudProv = cloud.NewHetznerProvider(hetznerToken)
+	} else {
+		cloudProv = cloud.NewMockCloudProvider()
+	}
+	autoHealingServ := service.NewAutoHealingService(db, cloudProv)
+
 	// Router setup
-	router := api.SetupRouter(cfg, db, userServ, nodeServ, subServ, billingServ)
+	router := api.SetupRouter(
+		cfg, db, userServ, nodeServ, subServ, billingServ,
+		blindServ, multiHopServ, autoHealingServ,
+	)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.Server.Port,

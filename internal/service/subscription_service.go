@@ -257,3 +257,30 @@ func (s *SubscriptionService) UpdateClientAWGKey(userID uuid.UUID, subID uuid.UU
 		}).Error
 	})
 }
+
+// RotateVlessUUIDs rotates VLESS UUIDs that are older than 24 hours.
+// Retains previous_vless_uuid for zero-downtime graceful in-flight client transitions.
+func (s *SubscriptionService) RotateVlessUUIDs() (int, error) {
+	var keys []models.ClientKey
+	cutoff := time.Now().Add(-24 * time.Hour)
+
+	if err := s.db.Where("protocol = ? AND (vless_rotated_at < ? OR vless_rotated_at IS NULL)", models.ProtocolVless, cutoff).Find(&keys).Error; err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for i := range keys {
+		k := &keys[i]
+		newUUID := uuid.New().String()
+		prev := k.VlessUUID
+		now := time.Now()
+		if err := s.db.Model(k).Updates(map[string]interface{}{
+			"vless_uuid":          newUUID,
+			"previous_vless_uuid": prev,
+			"vless_rotated_at":    now,
+		}).Error; err == nil {
+			count++
+		}
+	}
+	return count, nil
+}

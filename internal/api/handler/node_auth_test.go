@@ -56,8 +56,11 @@ func TestNodeSync_IDOR_And_Auth(t *testing.T) {
 	nodeServ := service.NewNodeService(db)
 	subServ := service.NewSubscriptionService(db, cfg)
 	billingServ := service.NewBillingService(db, subServ)
+	blindServ, _ := service.NewBlindTokenService(db)
+	multiHopServ := service.NewMultiHopService(db, subServ)
+	autoHealingServ := service.NewAutoHealingService(db, nil)
 
-	router := api.SetupRouter(cfg, db, userServ, nodeServ, subServ, billingServ)
+	router := api.SetupRouter(cfg, db, userServ, nodeServ, subServ, billingServ, blindServ, multiHopServ, autoHealingServ)
 
 	// Create Node A
 	nodeA, tokenA, err := nodeServ.CreateNode(service.CreateNodeDTO{
@@ -184,8 +187,11 @@ func TestNodeSync_Ed25519SignatureAuth(t *testing.T) {
 	nodeServ := service.NewNodeService(db)
 	subServ := service.NewSubscriptionService(db, cfg)
 	billingServ := service.NewBillingService(db, subServ)
+	blindServ, _ := service.NewBlindTokenService(db)
+	multiHopServ := service.NewMultiHopService(db, subServ)
+	autoHealingServ := service.NewAutoHealingService(db, nil)
 
-	router := api.SetupRouter(cfg, db, userServ, nodeServ, subServ, billingServ)
+	router := api.SetupRouter(cfg, db, userServ, nodeServ, subServ, billingServ, blindServ, multiHopServ, autoHealingServ)
 
 	// Valid signature with body hash
 	reqBody, _ := json.Marshal(map[string]interface{}{"node_id": node.ID.String()})

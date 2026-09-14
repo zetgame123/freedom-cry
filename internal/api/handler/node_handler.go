@@ -154,6 +154,13 @@ func (h *NodeHandler) NodeSync(c *gin.Context) {
 				Email: k.SubscriptionID.String()[:8] + "@fc.net",
 			})
 		}
+		// Grace period: allow previous VLESS UUID for 1 hour after rotation for seamless zero-downtime
+		if k.PreviousVlessUUID != "" && time.Since(k.VlessRotatedAt) < time.Hour {
+			vlessClients = append(vlessClients, VlessClientSync{
+				UUID:  k.PreviousVlessUUID,
+				Email: k.SubscriptionID.String()[:8] + "-prev@fc.net",
+			})
+		}
 		if k.AwgPublicKey != "" && k.AwgAddress != "" {
 			awgPeers = append(awgPeers, AwgPeerSync{
 				PublicKey:    k.AwgPublicKey,

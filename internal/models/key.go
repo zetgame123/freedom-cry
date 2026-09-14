@@ -21,7 +21,9 @@ type ClientKey struct {
 	Protocol       ProtocolType `gorm:"type:varchar(20);not null" json:"protocol"`
 
 	// --- VLESS details ---
-	VlessUUID string `gorm:"type:varchar(64)" json:"vless_uuid,omitempty"`
+	VlessUUID         string    `gorm:"type:varchar(64)" json:"vless_uuid,omitempty"`
+	PreviousVlessUUID string    `gorm:"type:varchar(64)" json:"previous_vless_uuid,omitempty"` // Grace period overlap
+	VlessRotatedAt    time.Time `json:"vless_rotated_at"`
 
 	// --- AmneziaWG details ---
 	// NOTE: Client private key is stored ONLY encrypted with HKDF(sub.Token).

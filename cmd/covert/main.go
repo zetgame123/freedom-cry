@@ -12,6 +12,7 @@ import (
 	"freedom-cry/internal/protocol/covert"
 	"freedom-cry/internal/protocol/covert/cups"
 	"freedom-cry/internal/protocol/covert/tunnel"
+	"freedom-cry/internal/protocol/covert/webrtc"
 	"freedom-cry/internal/protocol/covert/yandex"
 
 	"github.com/google/uuid"
@@ -63,8 +64,12 @@ func main() {
 		})
 	case "cups":
 		tr = cups.NewTransport(*roomUUID)
+	case "webrtc":
+		tr = webrtc.NewTransport(webrtc.Config{
+			IsInitiator: *mode == "client",
+		})
 	default:
-		log.Fatalf("Unknown transport: %s (supported: 'cups', 'yandex')", *transportType)
+		log.Fatalf("Unknown transport: %s (supported: 'webrtc', 'cups', 'yandex')", *transportType)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

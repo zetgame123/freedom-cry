@@ -7,16 +7,30 @@ import (
 	"gorm.io/gorm"
 )
 
+type NodeRole string
+
+const (
+	RoleStandalone NodeRole = "standalone" // Single-hop: both entry and exit
+	RoleEntry      NodeRole = "entry"      // Multi-hop: accepts client VPN connections, strictly forwards through fc-mesh0, NO direct internet WAN access
+	RoleExit       NodeRole = "exit"       // Multi-hop: egress breakout to internet, accepts traffic strictly from Entry nodes over fc-mesh0
+)
+
 type ServerNode struct {
 	ID          uuid.UUID  `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
 	Name        string     `gorm:"not null" json:"name"`
 	Country     string     `gorm:"not null" json:"country"`
-	CountryCode string     `gorm:"type:varchar(10);not null" json:"country_code"` // e.g. "NL", "DE", "SE"
+	CountryCode string     `gorm:"type:varchar(5);not null" json:"country_code"` // e.g. NL, DE, US
 	Host        string     `gorm:"not null" json:"host"`                          // IP or domain
 	IsOnline    bool       `gorm:"default:true" json:"is_online"`
 	IsRevoked   bool       `gorm:"default:false" json:"is_revoked"`
 	LoadPercent int        `gorm:"default:0" json:"load_percent"`
 	LastSeenAt  *time.Time `json:"last_seen_at"`
+
+	// --- Multi-Hop Topology & Mesh Configuration ---
+	Role       NodeRole `gorm:"type:varchar(20);default:'standalone'" json:"role"`
+	MeshIP     string   `gorm:"type:varchar(50)" json:"mesh_ip"`        // e.g. 10.99.1.1/24 (entry) or 10.99.2.1/24 (exit)
+	MeshPort   int      `gorm:"default:51821" json:"mesh_port"`         // WireGuard inter-node mesh port
+	MeshPubKey string   `gorm:"type:varchar(100)" json:"mesh_pub_key"` // WireGuard public key for inter-node mesh
 
 	// --- Node Cryptographic Identity ---
 	// Ed25519 public key of the node for mutual signature authentication
@@ -31,9 +45,15 @@ type ServerNode struct {
 	// NOTE: Server private key is generated and stored locally on the Node, NOT on Master.
 	VlessEnabled      bool   `gorm:"default:true" json:"vless_enabled"`
 	VlessPort         int    `gorm:"default:443" json:"vless_port"`
-	RealityPubKey     string `gorm:"not null" json:"reality_pub_key"`         // Server X25519 public key (pbk)
-	RealityShortID    string `gorm:"not null" json:"reality_short_id"`        // Short ID (hex)
-	RealityServerName string `gorm:"not null;default:'dl.google.com'" json:"reality_server_name"` // SNI
+	RealityPubKey     string `gorm:"not null" json:"reality_pub_key"`                           // Server X25519 public key (pbk)
+	RealityShortID    string `gorm:"not null" json:"reality_short_id"`                          // Short ID (hex)
+	RealityServerName string `gorm:"not null;default:'dl.google.com'" json:"reality_server_name"`   // Current active SNI
+	RealitySNIPool    string `gorm:"type:text;default:'www.microsoft.com,gateway.icloud.com,azure.microsoft.com,d1.awsstatic.com'" json:"reality_sni_pool"`
+
+	// --- Hysteria 2 (QUIC + Brutal CC) Configuration ---
+	HysteriaEnabled    bool   `gorm:"default:true" json:"hysteria_enabled"`
+	HysteriaPort       int    `gorm:"default:8443" json:"hysteria_port"`
+	HysteriaMasquerade string `gorm:"default:'https://bing.com'" json:"hysteria_masquerade"`
 
 	// --- AmneziaWG (Obfuscated WireGuard) Configuration ---
 	// NOTE: Server private key is generated and stored locally on the Node, NOT on Master.

@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"freedom-cry/internal/config"
@@ -94,6 +95,62 @@ func (s *UserService) Login(dto LoginDTO) (*AuthResponse, error) {
 	return &AuthResponse{Token: token, User: &user}, nil
 }
 
+// NormalizeAccountNumber cleans spaces and hyphens and returns XXXX-XXXX-XXXX-XXXX
+func NormalizeAccountNumber(raw string) string {
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(raw, "-", ""), " ", "")
+	if len(cleaned) == 16 {
+		return fmt.Sprintf("%s-%s-%s-%s", cleaned[0:4], cleaned[4:8], cleaned[8:12], cleaned[12:16])
+	}
+	return raw
+}
+
+// CreateAnonymousAccount creates a Mullvad-style Zero-Knowledge account with a 16-digit account number.
+// No email or password is required.
+func (s *UserService) CreateAnonymousAccount() (*AuthResponse, error) {
+	accNum, err := models.GenerateAccountNumber()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate account number: %w", err)
+	}
+
+	user := models.User{
+		AccountNumber: accNum,
+		Role:          models.RoleUser,
+		Balance:       0.00,
+		IsActive:      true,
+	}
+
+	if err := s.db.Create(&user).Error; err != nil {
+		return nil, fmt.Errorf("failed to create account: %w", err)
+	}
+
+	token, err := s.generateJWT(&user)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthResponse{Token: token, User: &user}, nil
+}
+
+// LoginByAccountNumber authenticates a user using only their 16-digit account number
+func (s *UserService) LoginByAccountNumber(rawAccount string) (*AuthResponse, error) {
+	norm := NormalizeAccountNumber(rawAccount)
+	var user models.User
+	if err := s.db.Where("account_number = ?", norm).First(&user).Error; err != nil {
+		return nil, errors.New("invalid account number")
+	}
+
+	if !user.IsActive {
+		return nil, errors.New("account is suspended")
+	}
+
+	token, err := s.generateJWT(&user)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthResponse{Token: token, User: &user}, nil
+}
+
 func (s *UserService) GetByID(id uuid.UUID) (*models.User, error) {
 	var user models.User
 	if err := s.db.Preload("Subscriptions.Plan").First(&user, "id = ?", id).Error; err != nil {
@@ -104,11 +161,14 @@ func (s *UserService) GetByID(id uuid.UUID) (*models.User, error) {
 
 func (s *UserService) generateJWT(user *models.User) (string, error) {
 	claims := jwt.MapClaims{
-		"sub":   user.ID.String(),
-		"email": user.Email,
-		"role":  string(user.Role),
-		"exp":   time.Now().Add(s.cfg.JWT.Expiry).Unix(),
-		"iat":   time.Now().Unix(),
+		"sub":            user.ID.String(),
+		"account_number": user.AccountNumber,
+		"role":           string(user.Role),
+		"exp":            time.Now().Add(s.cfg.JWT.Expiry).Unix(),
+		"iat":            time.Now().Unix(),
+	}
+	if user.Email != "" {
+		claims["email"] = user.Email
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
