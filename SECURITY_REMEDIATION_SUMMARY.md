@@ -2,9 +2,11 @@
 
 **Дата выполнения:** 14 сентября 2026  
 **Ветка:** `master`  
-**Коммиты:**
-- `292c43f`: `security: comprehensive vulnerability remediation and defense-in-depth hardening`
-- `44ba2b5`: `security: patch body tampering, replay within window, token downgrade, and stream leak`
+**Ключевые коммиты:**
+- `f48ebbe`: `security: comprehensive vulnerability remediation and defense-in-depth hardening`
+- `b91e4dc`: `security: patch body tampering, replay within window, token downgrade, and stream leak`
+- `86dbb1b`: `docs: add security remediation summary and verification report`
+- `29b5524`: `security: address adversarial audit findings (FC-01 through FC-08)`
 
 ---
 
@@ -16,7 +18,6 @@
    - Нода (`cmd/agent/main.go`) при первом старте генерирует ключевые пары локально в `/etc/freedom-cry/node-keys.json` с правами `0600`.
    - На Master отправляются только публичные ключи через защищённый эндпоинт `/api/v1/node/keys`.
    - В БД (`internal/database/db.go`) принудительно удалены legacy-колонки `reality_priv_key` и `awg_priv_key` из `server_nodes`, а также `awg_private_key` из `client_keys`.
-   - Приватный ключ клиента генерируется на клиенте и никогда не сохраняется на сервере.
 
 ### B. Криптографическая аутентификация и идентичность нод
 1. **Ed25519 криптографическая идентичность**:
@@ -42,39 +43,53 @@
    - Проверка `inUse` на уровне ExitNode предотвращает утечку дескрипторов при дублирующихся `CmdConnect`.
    - Разделены обработчики закрытия: входящий `CmdClose` закрывает сокет локально без паразитного эхо `CmdClose` обратно.
 
-### D. Конкурентность и целостность базы данных
-1. **Аллокация IP-адресов VPN**:
-   - Строчная транзакционная блокировка `SELECT ... FOR UPDATE` на строке ноды исключает race condition при одновременной покупке подписок.
-   - Составной уникальный индекс `idx_node_awg_addr` на `(node_id, awg_address)` на уровне схемы PostgreSQL гарантирует отсутствие коллизий.
+---
 
-### E. Безопасность Web & API
-1. **Защита от XSS**:
-   - Страница подписки переведена с конкатенации строк на контекстный шаблонизатор `html/template`.
-   - Внедрена строгая CSP (`default-src 'none'; style-src 'unsafe-inline'; script-src 'none'`), а также `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`.
-2. **Пароль администратора**:
-   - Удалён хардкод `admin123`. При первом старте генерируется случайный 32-символьный пароль (либо читается из переменной `ADMIN_INITIAL_PASSWORD`).
+## 2. УСТРАНЕНИЕ УЯЗВИМОСТЕЙ ИЗ ADVERSARIAL AUDIT REPORT (FC-01 — FC-08)
 
-### F. Инфраструктура, Docker и Systemd
-1. **Docker Compose**:
-   - База данных PostgreSQL и кэш Redis полностью изолированы во внутренней сети `freedomcry-net`. Внешние порты `5432` и `6379` отключены.
-   - Включён пароль Redis `--requirepass`.
-   - API привязан к локальному интерфейсу `${API_BIND_ADDR:-127.0.0.1}:8080` (требует проксирования через Nginx/Caddy с TLS).
-2. **Изоляция на уровне Linux (iptables & systemd)**:
-   - `scripts/setup-node.sh`: настроена строгая изоляция клиентов (`FORWARD -s 10.8.0.0/16 -d 10.8.0.0/16 -j DROP`).
-   - Клиенты не имеют доступа к хосту (`INPUT -s 10.8.0.0/16 -j DROP`), кроме DNS-запросов (порт 53).
-   - Заблокирован доступ к облачным метаданным (`169.254.0.0/16`).
-   - Systemd-юниты агента и covert-выхода запущены с песочницей: `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`, урезаны capabilities.
-   - Секреты больше не светятся в `ps aux` / `/proc` — передаются строго через `EnvironmentFile=/etc/freedom-cry/agent.env` (`chmod 600`).
+1. **FC-01 [CRITICAL]: Исправление AmneziaWG и Zero-Knowledge at Rest для приватных ключей клиентов**:
+   - **Проблема**: При создании подписки приватный ключ WireGuard уничтожался, а в скачиваемом конфиге отдавался плейсхолдер `<INSERT_YOUR_LOCAL_CLIENT_PRIVATE_KEY_HERE>`, из-за чего AmneziaWG не мог подключиться.
+   - **Решение**: Внедрено шифрование клиентского приватного ключа алгоритмом **AES-256-GCM** с ключом, вычисляемым через **HKDF-SHA256** из секретного токена подписки (`sub.Token`). В базе данных Master в открытом виде приватный ключ **никогда не сохраняется** (Zero-Knowledge at rest: при компрометации БД атакующий не может расшифровать приватные ключи без индивидуальных токенов пользователей). При обращении к `/sub/:token/awg/:node_id` хендлер расшифровывает ключ токеном и отдает полностью валидный `.conf` файл.
+   - **Custom Keys**: Добавлены эндпоинты `POST /sub/:token/awg/:node_id/pubkey` и `PUT /api/v1/user/subscriptions/:id/awg-key` для продвинутых клиентов, желающих передавать исключительно собственный клиентский публичный ключ.
+
+2. **FC-02 [CRITICAL]: Privacy Hardening, ротация токенов, мгновенный отзыв и GDPR Hard-Delete**:
+   - Реализована **ротация токенов подписки** (`POST /api/v1/user/subscriptions/:id/rotate`): генерирует новый 256-битный токен и автоматически перешифровывает все сохраненные приватные ключи клиента.
+   - Реализован **мгновенный отзыв подписки** (`POST /api/v1/user/subscriptions/:id/revoke`): мгновенно удаляет записи `ClientKey`, в результате чего нода сразу же сбрасывает WireGuard peer и VLESS UUID.
+   - Реализовано **полное жесткое удаление (Right to be forgotten)** (`DELETE /api/v1/user/me`): каскадное удаление через `Unscoped().Delete()` физически стирает учетную запись, подписки, ключи туннелей и платежные записи без сохранения soft-deleted строк.
+
+3. **FC-03 [CRITICAL]: Очистка истории Git от утекшего IP и харденинг секретов**:
+   - История репозитория полностью переписана через `git filter-branch --tree-filter` и `git gc --prune=now`. Боевой IP `144.31.148.122` физически удален со всех веток и коммитов.
+   - В `internal/config/config.go` заблокировано использование дефолтного `JWT_SECRET`: в release-режиме при пустом или дефолтном ключе автоматически генерируется криптографически стойкий 256-битный ключ в runtime.
+
+4. **FC-04 [HIGH]: Privacy Logger Middleware против утечки токенов и IP в Gin**:
+   - Стандартный логгер Gin заменен на `middleware.PrivacyLogger()`.
+   - Пути вида `/sub/:token/...` автоматически маскируются до `/sub/[REDACTED]/...`.
+   - Запись реальных домашних IP-адресов клиентов в stdout / docker logs полностью подавлена (`[PRIVACY_PROTECTED]`).
+
+5. **FC-05 [HIGH]: Защита эндпоинта списка нод `/api/v1/nodes`**:
+   - Эндпоинт перенесен в группу `userGroup` с обязательной JWT-аутентификацией (`middleware.AuthMiddleware`). Неавторизованные сетевые цензоры и сканеры не могут получить IP-адреса боевых серверов.
+
+6. **FC-06 [HIGH]: Ликвидация утечки IPv6 (IPv6 Leak Elimination)**:
+   - В AmneziaWG конфиге клиенту назначается Dual-Stack адрес (`10.8.x.x/32, fd00:8::x/128`) с `AllowedIPs = 0.0.0.0/0, ::/0`, что принудительно захватывает весь IPv4 и IPv6 трафик в виртуальный адаптер WireGuard без сброса на физический интерфейс провайдера.
+   - В `scripts/setup-node.sh` включен IPv6-форвардинг ядра, настроен IPv6 NAT66 MASQUERADE для ULA-сети `fd00:8::/64`, а также правила изоляции клиентов и изоляции хоста для IPv6.
+
+7. **FC-07 [MEDIUM]: Исправление маршрутизации подсети AmneziaWG (/16 Dual-Stack)**:
+   - Маска интерфейса сервера `AwgServerSubnet` изменена с `/24` на `10.8.0.1/16, fd00:8::1/64` в моделях, авто-миграции базы данных, сидах и агенте. Клиенты с IP `10.8.1.X` и выше теперь корректно маршрутизируются ядром.
+
+8. **FC-08 [MEDIUM]: Динамическая изоляция комнат Cups.online в Covert Channel**:
+   - В `cmd/covert/main.go` устранен статический хардкод `"freedom-cry-emergency-room"`. Имя комнаты вычисляется динамически через SHA-256 HKDF от общего секретного ключа (`-key`), гарантируя взаимную изоляцию и защиту от перехвата и DoS.
+
+9. **Дополнительный харденинг безопасности API**:
+   - Исправлена конфигурация CORS (`Vary: Origin`, корректное разграничение credentials).
+   - Внедрен `middleware.RateLimiter` (10 запросов в минуту на IP) для маршрутов `/api/v1/auth/register` и `/api/v1/auth/login`.
 
 ---
 
-## 2. СВОДКА РЕЗУЛЬТАТОВ ТЕСТИРОВАНИЯ
+## 3. СВОДКА РЕЗУЛЬТАТОВ ТЕСТИРОВАНИЯ
 
 - **`go test -v ./...`**: Все тесты успешно пройдены (PASS).
 - **`go test -race -count=1 ./...`**: **0 гонок данных (data races: 0)**.
-- **`go test -fuzz=FuzzDecryptFrame -fuzztime=5s ./internal/protocol/covert`**: **2 877 685 итераций без сбоев**.
 - **`go vet ./...`**: **0 предупреждений**.
-- **`govulncheck ./...`**: **0 уязвимостей в используемом коде**.
 - **Компиляция бинарников**:
   - `bin/freedom-cry-server` (OK)
   - `bin/freedom-cry-agent` (OK)
@@ -82,7 +97,7 @@
 
 ---
 
-## 3. СТАТУС ГОТОВНОСТИ
+## 4. СТАТУС ГОТОВНОСТИ
 
-Проект прошёл комплексный цикл адверсариального аудита, все выявленные уязвимости и векторы обхода устранены на уровне архитектуры и кода.  
-Репозиторий находится в чистом, скомпилированном и закоммиченном состоянии в ветке `master`.
+Все замечания, архитектурные дефекты и риски деанонимизации из отчета `/home/zet/Work/FREEDOM_CRY_SECURITY_AUDIT_REPORT.md` (FC-01 по FC-08) полностью устранены в коде, протестированы и закоммичены.  
+Репозиторий находится в чистом, верифицированном и скомпилированном состоянии в ветке `master`.
