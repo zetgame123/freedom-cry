@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"freedom-cry/internal/api/middleware"
 	"freedom-cry/internal/models"
 	"freedom-cry/internal/service"
 
@@ -61,26 +62,28 @@ func (h *NodeHandler) AdminCreateNode(c *gin.Context) {
 		return
 	}
 
-	node, err := h.nodeServ.CreateNode(dto)
+	node, enrollmentToken, err := h.nodeServ.CreateNode(dto)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, node)
+	c.JSON(http.StatusCreated, gin.H{
+		"node":             node,
+		"enrollment_token": enrollmentToken,
+		"instructions":     "Pass this enrollment_token to the node agent. It cannot be retrieved again.",
+	})
 }
 
 type NodeSyncRequest struct {
-	NodeID      uuid.UUID `json:"node_id" binding:"required"`
+	NodeID      uuid.UUID `json:"node_id"`
 	LoadPercent int       `json:"load_percent"`
 }
 
 type NodeSyncResponse struct {
-	Node              models.ServerNode `json:"node"`
-	RealityPrivateKey string            `json:"reality_private_key"`
-	AwgPrivateKey     string            `json:"awg_private_key"`
-	VlessClients      []VlessClientSync `json:"vless_clients"`
-	AwgPeers          []AwgPeerSync     `json:"awg_peers"`
+	Node         models.ServerNode `json:"node"`
+	VlessClients []VlessClientSync `json:"vless_clients"`
+	AwgPeers     []AwgPeerSync     `json:"awg_peers"`
 }
 
 type VlessClientSync struct {
@@ -95,18 +98,35 @@ type AwgPeerSync struct {
 }
 
 func (h *NodeHandler) NodeSync(c *gin.Context) {
+	// Authenticate node identity from cryptographic context
+	authNodeIDVal, exists := c.Get(middleware.ContextAuthenticatedNodeID)
+	if !exists {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "node authentication required"})
+		return
+	}
+	authenticatedNodeID := authNodeIDVal.(uuid.UUID)
+
 	var req NodeSyncRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Update heartbeat
-	_ = h.nodeServ.RecordHeartbeat(req.NodeID, req.LoadPercent)
+	// ZERO TRUST / IDOR PREVENTION:
+	// If a node attempts to sync resources for another node ID, fail-closed with 403 Forbidden!
+	if req.NodeID != uuid.Nil && req.NodeID != authenticatedNodeID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden: cross-node access denied"})
+		return
+	}
+
+	targetNodeID := authenticatedNodeID
+
+	// Update heartbeat for the authenticated node
+	_ = h.nodeServ.RecordHeartbeat(targetNodeID, req.LoadPercent)
 
 	var node models.ServerNode
-	if err := h.db.First(&node, "id = ?", req.NodeID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "node not found"})
+	if err := h.db.First(&node, "id = ? AND is_revoked = ?", targetNodeID, false).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "node not found or revoked"})
 		return
 	}
 
@@ -116,7 +136,7 @@ func (h *NodeHandler) NodeSync(c *gin.Context) {
 	err := h.db.
 		Joins("JOIN subscriptions ON subscriptions.id = client_keys.subscription_id").
 		Where("client_keys.node_id = ? AND subscriptions.status = ? AND subscriptions.expires_at > ?",
-			req.NodeID, models.SubActive, now).
+			targetNodeID, models.SubActive, now).
 		Find(&keys).Error
 
 	if err != nil {
@@ -143,11 +163,40 @@ func (h *NodeHandler) NodeSync(c *gin.Context) {
 		}
 	}
 
+	// NOTE: Notice that RealityPrivateKey and AwgPrivateKey are NEVER returned.
+	// Private keys are strictly held on the node itself.
 	c.JSON(http.StatusOK, NodeSyncResponse{
-		Node:              node,
-		RealityPrivateKey: node.RealityPrivKey,
-		AwgPrivateKey:     node.AwgPrivKey,
-		VlessClients:      vlessClients,
-		AwgPeers:          awgPeers,
+		Node:         node,
+		VlessClients: vlessClients,
+		AwgPeers:     awgPeers,
 	})
+}
+
+type RegisterKeysRequest struct {
+	RealityPubKey  string `json:"reality_pub_key"`
+	RealityShortID string `json:"reality_short_id"`
+	AwgPubKey      string `json:"awg_pub_key"`
+	PublicKey      string `json:"public_key"`
+}
+
+func (h *NodeHandler) RegisterKeys(c *gin.Context) {
+	authNodeIDVal, exists := c.Get(middleware.ContextAuthenticatedNodeID)
+	if !exists {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "node authentication required"})
+		return
+	}
+	authenticatedNodeID := authNodeIDVal.(uuid.UUID)
+
+	var req RegisterKeysRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.nodeServ.RegisterNodeKeys(authenticatedNodeID, req.RealityPubKey, req.RealityShortID, req.AwgPubKey, req.PublicKey); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "node public keys registered successfully"})
 }

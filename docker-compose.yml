@@ -3,16 +3,20 @@ services:
     image: postgres:16-alpine
     container_name: freedom-cry-postgres
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
-      POSTGRES_USER: freedomcry
-      POSTGRES_PASSWORD: freedomcry_secret
-      POSTGRES_DB: freedomcry_db
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${DB_USER:-freedomcry}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be provided}
+      POSTGRES_DB: ${DB_NAME:-freedomcry_db}
+    # SECURITY: Database port is NOT exposed on public interfaces.
+    # It is accessible strictly inside the internal Docker network.
+    networks:
+      - freedomcry-net
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U freedomcry -d freedomcry_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-freedomcry} -d ${DB_NAME:-freedomcry_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -21,12 +25,18 @@ services:
     image: redis:7-alpine
     container_name: freedom-cry-redis
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    security_opt:
+      - no-new-privileges:true
+    # SECURITY: Require strong password authentication and do not expose port publicly.
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be provided}
+    networks:
+      - freedomcry-net
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -37,6 +47,8 @@ services:
       dockerfile: Dockerfile.server
     container_name: freedom-cry-api
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,19 +56,27 @@ services:
         condition: service_healthy
     environment:
       PORT: "8080"
-      GIN_MODE: "release"
+      GIN_MODE: "${GIN_MODE:-release}"
       DB_HOST: "postgres"
       DB_PORT: "5432"
-      DB_USER: "freedomcry"
-      DB_PASSWORD: "freedomcry_secret"
-      DB_NAME: "freedomcry_db"
-      DB_SSLMODE: "disable"
+      DB_USER: "${DB_USER:-freedomcry}"
+      DB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD must be provided}"
+      DB_NAME: "${DB_NAME:-freedomcry_db}"
+      DB_SSLMODE: "${DB_SSLMODE:-disable}"
       REDIS_ADDR: "redis:6379"
-      BASE_URL: "${BASE_URL:-http://127.0.0.1:8080}"
-      NODE_SECRET: "fc-node-secret-token-key-2026"
-      JWT_SECRET: "freedom-cry-super-secure-jwt-secret-change-in-prod"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD must be provided}"
+      BASE_URL: "${BASE_URL:?BASE_URL must be set (e.g. https://vpn.freedomcry.net)}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be provided with high entropy}"
+      ADMIN_INITIAL_PASSWORD: "${ADMIN_INITIAL_PASSWORD:-}"
+    networks:
+      - freedomcry-net
     ports:
+      # API listener (reverse-proxied via Nginx/Caddy/Cloudflare with TLS in production)
       - "8080:8080"
+
+networks:
+  freedomcry-net:
+    driver: bridge
 
 volumes:
   postgres_data:

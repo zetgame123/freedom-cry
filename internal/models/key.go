@@ -17,16 +17,16 @@ const (
 type ClientKey struct {
 	ID             uuid.UUID    `gorm:"type:uuid;primary_key;default:gen_random_uuid()" json:"id"`
 	SubscriptionID uuid.UUID    `gorm:"type:uuid;not null;index" json:"subscription_id"`
-	NodeID         uuid.UUID    `gorm:"type:uuid;not null;index" json:"node_id"`
+	NodeID         uuid.UUID    `gorm:"type:uuid;not null;index;uniqueIndex:idx_node_awg_addr,priority:1" json:"node_id"`
 	Protocol       ProtocolType `gorm:"type:varchar(20);not null" json:"protocol"`
 
 	// --- VLESS details ---
 	VlessUUID string `gorm:"type:varchar(64)" json:"vless_uuid,omitempty"`
 
 	// --- AmneziaWG details ---
-	AwgAddress      string `gorm:"type:varchar(50)" json:"awg_address,omitempty"` // e.g. 10.8.0.2/32
-	AwgPrivateKey   string `gorm:"type:varchar(100)" json:"-"`                    // client's private key
-	AwgPublicKey    string `gorm:"type:varchar(100)" json:"awg_public_key,omitempty"` // client's public key (stored on server)
+	// NOTE: Client private key is NEVER stored on Master! Client generates and holds it locally.
+	AwgAddress      string `gorm:"type:varchar(50);uniqueIndex:idx_node_awg_addr,priority:2" json:"awg_address,omitempty"` // e.g. 10.8.0.2/32
+	AwgPublicKey    string `gorm:"type:varchar(100)" json:"awg_public_key,omitempty"`                                      // client's public key (stored on server)
 	AwgPresharedKey string `gorm:"type:varchar(100)" json:"-"`
 
 	CreatedAt time.Time      `json:"created_at"`

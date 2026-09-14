@@ -29,13 +29,14 @@ func main() {
 
 	// Cups.online flags
 	roomUUID := flag.String("room", "freedom-cry-emergency-room", "Cups.online Room UUID")
+	sessionID := flag.Uint64("session", 1, "Session ID for covert stream isolation")
 
 	flag.Parse()
 
 	log.Println("==================================================")
 	log.Println("   🦅 Freedom Cry - Covert Whitelist Tunnel       ")
 	log.Println("==================================================")
-	log.Printf("Mode: %s | Transport: %s | Secret Key Encrypted: true", *mode, *transportType)
+	log.Printf("Mode: %s | Transport: %s | Session: %d | Replay Protection: true", *mode, *transportType, *sessionID)
 
 	var tr covert.Transport
 	switch *transportType {
@@ -57,7 +58,7 @@ func main() {
 	defer cancel()
 
 	if *mode == "exit" {
-		exitNode, err := tunnel.NewExitNode(tr, []byte(*secretKey))
+		exitNode, err := tunnel.NewExitNode(tr, *sessionID, []byte(*secretKey))
 		if err != nil {
 			log.Fatalf("Failed to initialize exit node: %v", err)
 		}
@@ -67,7 +68,7 @@ func main() {
 		}
 		defer exitNode.Stop()
 	} else {
-		clientTunnel, err := tunnel.NewSOCKS5ClientTunnel(*socks5Addr, tr, []byte(*secretKey))
+		clientTunnel, err := tunnel.NewSOCKS5ClientTunnel(*socks5Addr, tr, *sessionID, []byte(*secretKey))
 		if err != nil {
 			log.Fatalf("Failed to initialize SOCKS5 client: %v", err)
 		}

@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -9,29 +10,28 @@ import (
 	"time"
 
 	"freedom-cry/internal/protocol/covert"
+	"freedom-cry/internal/protocol/covert/safedial"
 )
 
 type ExitNode struct {
-	transport covert.Transport
-	cipher    *covert.FrameCipher
-	streams   map[uint32]net.Conn
-	mu        sync.RWMutex
+	transport  covert.Transport
+	channel    *covert.SecureChannel
+	safeDialer *safedial.SafeDialer
+	streams    map[uint32]net.Conn
+	mu         sync.RWMutex
 }
 
-func NewExitNode(transport covert.Transport, secretKey []byte) (*ExitNode, error) {
-	var cipher *covert.FrameCipher
-	if len(secretKey) > 0 {
-		var err error
-		cipher, err = covert.NewFrameCipher(secretKey)
-		if err != nil {
-			return nil, err
-		}
+func NewExitNode(transport covert.Transport, sessionID uint64, secretKey []byte) (*ExitNode, error) {
+	channel, err := covert.NewSecureChannel(covert.PartyServer, sessionID, secretKey)
+	if err != nil {
+		return nil, err
 	}
 
 	node := &ExitNode{
-		transport: transport,
-		cipher:    cipher,
-		streams:   make(map[uint32]net.Conn),
+		transport:  transport,
+		channel:    channel,
+		safeDialer: safedial.NewSafeDialer(10 * time.Second),
+		streams:    make(map[uint32]net.Conn),
 	}
 
 	transport.OnReceive(node.handleIncomingFrameBytes)
@@ -39,7 +39,7 @@ func NewExitNode(transport covert.Transport, secretKey []byte) (*ExitNode, error
 }
 
 func (n *ExitNode) Start(ctx context.Context) error {
-	log.Printf("[ExitNode] Starting exit node using transport %s", n.transport.Name())
+	log.Printf("[ExitNode] Starting hardened exit node (Transport: %s, SSRFProtection: ENABLED, ReplayProtection: ENABLED)", n.transport.Name())
 	return n.transport.Start(ctx)
 }
 
@@ -55,18 +55,9 @@ func (n *ExitNode) Stop() error {
 }
 
 func (n *ExitNode) handleIncomingFrameBytes(raw []byte) {
-	decrypted, err := n.cipher.Decrypt(raw)
+	frame, err := n.channel.DecryptFrame(raw)
 	if err != nil {
-		return
-	}
-
-	frame, err := covert.DecodeFrame(decrypted)
-	if err != nil {
-		return
-	}
-
-	// Ignore echo frames sent by server (including self)
-	if frame.Direction == covert.DirServerToClient {
+		// corruped, replayed, or direction-mismatched
 		return
 	}
 
@@ -88,26 +79,30 @@ func (n *ExitNode) handleIncomingFrameBytes(raw []byte) {
 		n.closeStream(frame.StreamID)
 
 	case covert.CmdPing:
-		pongFrame := covert.Frame{
-			StreamID:  frame.StreamID,
-			Cmd:       covert.CmdPong,
-			Direction: covert.DirServerToClient,
-		}
-		n.sendFrame(pongFrame)
+		_ = n.sendFrame(frame.StreamID, covert.CmdPong, nil)
 	}
 }
 
 func (n *ExitNode) handleConnect(streamID uint32, target string) {
-	dialer := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := dialer.Dial("tcp", target)
+	// 1. Enforce stream count limits
+	n.mu.RLock()
+	streamCount := len(n.streams)
+	n.mu.RUnlock()
+
+	if streamCount >= MaxConcurrentStreams {
+		log.Printf("[ExitNode] Max concurrent streams reached (%d), rejecting %s", MaxConcurrentStreams, target)
+		_ = n.sendFrame(streamID, covert.CmdClose, nil)
+		return
+	}
+
+	// 2. Safe dial with strict SSRF blocklist (blocks loopback, RFC1918, link-local, cloud metadata, rebinding)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := n.safeDialer.DialContext(ctx, "tcp", target)
 	if err != nil {
-		log.Printf("[ExitNode] Dial %s failed: %v", target, err)
-		closeFrame := covert.Frame{
-			StreamID:  streamID,
-			Cmd:       covert.CmdClose,
-			Direction: covert.DirServerToClient,
-		}
-		n.sendFrame(closeFrame)
+		log.Printf("[ExitNode SSRF Defense] Dial rejected for target %q: %v", target, err)
+		_ = n.sendFrame(streamID, covert.CmdClose, nil)
 		return
 	}
 
@@ -117,21 +112,15 @@ func (n *ExitNode) handleConnect(streamID uint32, target string) {
 
 	log.Printf("[ExitNode] Stream %d connected to %s", streamID, target)
 
-	// Pump responses from the real website back through the covert transport
+	// 3. Pump responses from the real destination back through the covert transport
 	go func() {
 		defer n.closeStream(streamID)
-		buf := make([]byte, 1500) // Optimal chunk size for covert channels
+		buf := make([]byte, 1500)
 
 		for {
 			nr, err := conn.Read(buf)
 			if nr > 0 {
-				dataFrame := covert.Frame{
-					StreamID:  streamID,
-					Cmd:       covert.CmdData,
-					Direction: covert.DirServerToClient,
-					Payload:   buf[:nr],
-				}
-				if err := n.sendFrame(dataFrame); err != nil {
+				if err := n.sendFrame(streamID, covert.CmdData, buf[:nr]); err != nil {
 					return
 				}
 			}
@@ -153,19 +142,15 @@ func (n *ExitNode) closeStream(streamID uint32) {
 
 	if exists && conn != nil {
 		_ = conn.Close()
-		closeFrame := covert.Frame{
-			StreamID:  streamID,
-			Cmd:       covert.CmdClose,
-			Direction: covert.DirServerToClient,
-		}
-		_ = n.sendFrame(closeFrame)
+		_ = n.sendFrame(streamID, covert.CmdClose, nil)
 	}
 }
 
-func (n *ExitNode) sendFrame(f covert.Frame) error {
-	f.Direction = covert.DirServerToClient
-	raw := covert.EncodeFrame(f)
-	encrypted, err := n.cipher.Encrypt(raw)
+func (n *ExitNode) sendFrame(streamID uint32, cmd covert.Command, payload []byte) error {
+	if n.channel == nil {
+		return errors.New("secure channel not initialized")
+	}
+	encrypted, err := n.channel.EncryptFrame(streamID, cmd, payload)
 	if err != nil {
 		return err
 	}

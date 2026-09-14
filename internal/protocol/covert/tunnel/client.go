@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,36 +14,36 @@ import (
 	"freedom-cry/internal/protocol/covert"
 )
 
+const (
+	MaxConcurrentStreams = 512
+)
+
 type SOCKS5ClientTunnel struct {
 	listenAddr string
 	transport  covert.Transport
-	cipher     *covert.FrameCipher
+	channel    *covert.SecureChannel
 	listener   net.Listener
 
-	streams      map[uint32]net.Conn
-	streamIDGen  atomic.Uint32
-	mu           sync.RWMutex
-	running      atomic.Bool
+	streams     map[uint32]net.Conn
+	streamIDGen atomic.Uint32
+	mu          sync.RWMutex
+	running     atomic.Bool
 }
 
-func NewSOCKS5ClientTunnel(listenAddr string, transport covert.Transport, secretKey []byte) (*SOCKS5ClientTunnel, error) {
+func NewSOCKS5ClientTunnel(listenAddr string, transport covert.Transport, sessionID uint64, secretKey []byte) (*SOCKS5ClientTunnel, error) {
 	if listenAddr == "" {
 		listenAddr = "127.0.0.1:1080"
 	}
 
-	var cipher *covert.FrameCipher
-	if len(secretKey) > 0 {
-		var err error
-		cipher, err = covert.NewFrameCipher(secretKey)
-		if err != nil {
-			return nil, err
-		}
+	channel, err := covert.NewSecureChannel(covert.PartyClient, sessionID, secretKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create secure channel: %w", err)
 	}
 
 	client := &SOCKS5ClientTunnel{
 		listenAddr: listenAddr,
 		transport:  transport,
-		cipher:     cipher,
+		channel:    channel,
 		streams:    make(map[uint32]net.Conn),
 	}
 
@@ -62,7 +63,7 @@ func (c *SOCKS5ClientTunnel) Start(ctx context.Context) error {
 	c.listener = l
 	c.running.Store(true)
 
-	log.Printf("[Covert Client] SOCKS5 server listening at %s (Transport: %s)", c.listenAddr, c.transport.Name())
+	log.Printf("[Covert Client] SOCKS5 server listening at %s (Transport: %s, ReplayProtected: true)", c.listenAddr, c.transport.Name())
 
 	go c.acceptLoop(ctx)
 	return nil
@@ -170,6 +171,17 @@ func (c *SOCKS5ClientTunnel) handleSOCKS5Connection(conn net.Conn) {
 	targetPort := binary.BigEndian.Uint16(portBuf)
 	target := fmt.Sprintf("%s:%d", targetHost, targetPort)
 
+	// Resource Limit Check
+	c.mu.RLock()
+	activeCount := len(c.streams)
+	c.mu.RUnlock()
+
+	if activeCount >= MaxConcurrentStreams {
+		log.Printf("[Covert Client] Max concurrent streams reached (%d), rejecting %s", MaxConcurrentStreams, target)
+		_, _ = conn.Write([]byte{0x05, 0x04, 0x00, 0x01, 0, 0, 0, 0, 0, 0}) // Host unreachable
+		return
+	}
+
 	// Send success reply to browser/app
 	if _, err := conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
@@ -184,13 +196,7 @@ func (c *SOCKS5ClientTunnel) handleSOCKS5Connection(conn net.Conn) {
 	defer c.closeStream(streamID)
 
 	// Send CmdConnect frame
-	connectFrame := covert.Frame{
-		StreamID:  streamID,
-		Cmd:       covert.CmdConnect,
-		Direction: covert.DirClientToServer,
-		Payload:   []byte(target),
-	}
-	if err := c.sendFrame(connectFrame); err != nil {
+	if err := c.sendFrame(streamID, covert.CmdConnect, []byte(target)); err != nil {
 		log.Printf("[Covert Client] Failed to send connect frame: %v", err)
 		return
 	}
@@ -202,13 +208,7 @@ func (c *SOCKS5ClientTunnel) handleSOCKS5Connection(conn net.Conn) {
 	for {
 		nr, err := conn.Read(buf)
 		if nr > 0 {
-			dataFrame := covert.Frame{
-				StreamID:  streamID,
-				Cmd:       covert.CmdData,
-				Direction: covert.DirClientToServer,
-				Payload:   buf[:nr],
-			}
-			if err := c.sendFrame(dataFrame); err != nil {
+			if err := c.sendFrame(streamID, covert.CmdData, buf[:nr]); err != nil {
 				return
 			}
 		}
@@ -219,18 +219,9 @@ func (c *SOCKS5ClientTunnel) handleSOCKS5Connection(conn net.Conn) {
 }
 
 func (c *SOCKS5ClientTunnel) handleIncomingFrameBytes(raw []byte) {
-	decrypted, err := c.cipher.Decrypt(raw)
+	frame, err := c.channel.DecryptFrame(raw)
 	if err != nil {
-		return
-	}
-
-	frame, err := covert.DecodeFrame(decrypted)
-	if err != nil {
-		return
-	}
-
-	// Ignore echo frames sent by clients (including self)
-	if frame.Direction == covert.DirClientToServer {
+		// Silently ignore corrupted, replayed, or direction-mismatched packets
 		return
 	}
 
@@ -257,19 +248,15 @@ func (c *SOCKS5ClientTunnel) closeStream(streamID uint32) {
 
 	if exists && conn != nil {
 		_ = conn.Close()
-		closeFrame := covert.Frame{
-			StreamID:  streamID,
-			Cmd:       covert.CmdClose,
-			Direction: covert.DirClientToServer,
-		}
-		_ = c.sendFrame(closeFrame)
+		_ = c.sendFrame(streamID, covert.CmdClose, nil)
 	}
 }
 
-func (c *SOCKS5ClientTunnel) sendFrame(f covert.Frame) error {
-	f.Direction = covert.DirClientToServer
-	raw := covert.EncodeFrame(f)
-	encrypted, err := c.cipher.Encrypt(raw)
+func (c *SOCKS5ClientTunnel) sendFrame(streamID uint32, cmd covert.Command, payload []byte) error {
+	if c.channel == nil {
+		return errors.New("secure channel not initialized")
+	}
+	encrypted, err := c.channel.EncryptFrame(streamID, cmd, payload)
 	if err != nil {
 		return err
 	}

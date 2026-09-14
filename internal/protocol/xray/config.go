@@ -2,12 +2,13 @@ package xray
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
 type XrayConfig struct {
-	Log       LogConfig       `json:"log"`
-	Inbounds  []InboundConfig `json:"inbounds"`
+	Log       LogConfig        `json:"log"`
+	Inbounds  []InboundConfig  `json:"inbounds"`
 	Outbounds []OutboundConfig `json:"outbounds"`
 }
 
@@ -109,4 +110,39 @@ func GenerateServerConfig(port int, privKey, sni string, shortIDs []string, clie
 	}
 
 	return json.MarshalIndent(cfg, "", "  ")
+}
+
+// ValidateServerConfig performs strict pre-write schema and semantic validation
+// to prevent corrupted or malicious configurations from being applied.
+func ValidateServerConfig(data []byte) error {
+	if len(data) == 0 {
+		return errors.New("xray config is empty")
+	}
+
+	var cfg XrayConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return fmt.Errorf("invalid json syntax: %w", err)
+	}
+
+	if len(cfg.Inbounds) == 0 {
+		return errors.New("xray config must contain at least one inbound")
+	}
+	if len(cfg.Outbounds) == 0 {
+		return errors.New("xray config must contain at least one outbound")
+	}
+
+	inbound := cfg.Inbounds[0]
+	if inbound.Port < 1 || inbound.Port > 65535 {
+		return fmt.Errorf("invalid inbound port: %d", inbound.Port)
+	}
+
+	if inbound.Protocol != "vless" {
+		return fmt.Errorf("expected vless protocol, got %s", inbound.Protocol)
+	}
+
+	if inbound.StreamSettings.RealitySettings.PrivateKey == "" {
+		return errors.New("reality private key cannot be empty")
+	}
+
+	return nil
 }

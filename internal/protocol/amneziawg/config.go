@@ -2,7 +2,9 @@ package amneziawg
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"strings"
 	"text/template"
 )
 
@@ -125,6 +127,13 @@ func GenerateClientConfig(p ClientConfigParams) (string, error) {
 
 // GenerateServerConfig generates the server-side awg0.conf
 func GenerateServerConfig(p ServerConfigParams) (string, error) {
+	if p.ServerPrivateKey == "" {
+		return "", errors.New("server private key cannot be empty")
+	}
+	if p.ListenPort < 1 || p.ListenPort > 65535 {
+		return "", fmt.Errorf("invalid listen port: %d", p.ListenPort)
+	}
+
 	tmpl, err := template.New("serverConf").Parse(serverConfTemplate)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse template: %w", err)
@@ -136,4 +145,21 @@ func GenerateServerConfig(p ServerConfigParams) (string, error) {
 	}
 
 	return buf.String(), nil
+}
+
+// ValidateServerConfig performs structural validation on generated awg0.conf
+func ValidateServerConfig(conf string) error {
+	if len(strings.TrimSpace(conf)) == 0 {
+		return errors.New("awg config is empty")
+	}
+	if !strings.Contains(conf, "[Interface]") {
+		return errors.New("missing [Interface] section")
+	}
+	if !strings.Contains(conf, "PrivateKey = ") {
+		return errors.New("missing PrivateKey parameter")
+	}
+	if !strings.Contains(conf, "ListenPort = ") {
+		return errors.New("missing ListenPort parameter")
+	}
+	return nil
 }

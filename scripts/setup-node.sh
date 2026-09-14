@@ -177,9 +177,24 @@ fi
 
 echo -e "Обнаружен внешний сетевой интерфейс: ${GREEN}${WAN_IFACE}${NC}"
 
-# Add NAT MASQUERADE for AWG subnet (10.8.0.0/24 and 10.8.0.0/16)
+# Add NAT MASQUERADE for AWG subnet (10.8.0.0/16)
 iptables -t nat -C POSTROUTING -s 10.8.0.0/16 -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null || \
 iptables -t nat -A POSTROUTING -s 10.8.0.0/16 -o "$WAN_IFACE" -j MASQUERADE
+
+# 1. SECURITY: Block client-to-client network pivoting
+iptables -C FORWARD -s 10.8.0.0/16 -d 10.8.0.0/16 -j DROP 2>/dev/null || \
+iptables -I FORWARD 1 -s 10.8.0.0/16 -d 10.8.0.0/16 -j DROP
+
+# 2. SECURITY: Block client access to cloud metadata (169.254.169.254)
+iptables -C FORWARD -s 10.8.0.0/16 -d 169.254.169.254 -j DROP 2>/dev/null || \
+iptables -I FORWARD 2 -s 10.8.0.0/16 -d 169.254.169.254 -j DROP
+
+# 3. SECURITY: Block client access to sensitive host management services
+iptables -C INPUT -s 10.8.0.0/16 -p tcp -m multiport --dports 22,5432,6379,8080 -j DROP 2>/dev/null || \
+iptables -I INPUT 1 -s 10.8.0.0/16 -p tcp -m multiport --dports 22,5432,6379,8080 -j DROP
+
+# 4. SECURITY: Prevent IPv6 traffic leakage
+ip6tables -P FORWARD DROP 2>/dev/null || true
 
 iptables -C FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
 iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT
@@ -189,12 +204,11 @@ iptables -A FORWARD -s 10.8.0.0/16 -j ACCEPT
 
 # Save iptables rules
 netfilter-persistent save >/dev/null 2>&1 || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-echo -e "${GREEN}✓ NAT-форвардинг настроен для подсети 10.8.0.0/16${NC}"
+echo -e "${GREEN}✓ NAT-форвардинг и правила изоляции клиентов настроены${NC}"
 
 # 8. Install Freedom Cry Node Agent
 echo -e "${YELLOW}[6/7] Установка демона Freedom Cry Node Agent...${NC}"
 
-# Download pre-built binary or compile
 mkdir -p /opt/freedom-cry
 AGENT_BIN="/opt/freedom-cry/agent"
 
@@ -212,25 +226,34 @@ elif command -v docker >/dev/null 2>&1; then
 else
     # Download from API master or build via Go
     echo -e "Загрузка бинарника agent с мастер-сервера..."
-    if ! curl -fsSL -H "X-Node-Secret: $NODE_SECRET" "$API_URL/download/agent" -o "$AGENT_BIN" 2>/dev/null; then
-        echo -e "${CYAN}Мастер не отдает бинарник напрямую, проверяем наличие Go...${NC}"
-        if command -v go >/dev/null 2>&1; then
-            echo -e "Компиляция агента на лету через Go..."
-            go build -o "$AGENT_BIN" ./cmd/agent
-        fi
+    if command -v go >/dev/null 2>&1; then
+        echo -e "Компиляция агента через Go..."
+        go build -o "$AGENT_BIN" ./cmd/agent
     fi
 fi
 
-# If agent binary is not present yet, create fallback runner script
 if [[ ! -f "$AGENT_BIN" ]]; then
     echo -e "${YELLOW}[Внимание] Бинарник агента не был найден автоматически.${NC}"
     echo -e "Скопируй скомпилированный бинарник 'agent' в путь: ${BOLD}/opt/freedom-cry/agent${NC}"
 fi
 
-# Create Systemd service for Freedom Cry Agent
+# Create secure environment file with restricted permissions (0600)
+mkdir -p /etc/freedom-cry
+chmod 700 /etc/freedom-cry
+cat > /etc/freedom-cry/agent.env << EOF
+FC_API_URL=${API_URL}
+FC_NODE_ID=${NODE_ID}
+FC_NODE_SECRET=${NODE_SECRET}
+XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
+AWG_CONFIG_PATH=/etc/amnezia/amneziawg/awg0.conf
+FC_KEYS_PATH=/etc/freedom-cry/node-keys.json
+EOF
+chmod 600 /etc/freedom-cry/agent.env
+
+# Create Hardened Systemd service for Freedom Cry Agent
 cat > /etc/systemd/system/freedom-cry-agent.service << EOF
 [Unit]
-Description=Freedom Cry VPN Node Agent
+Description=Freedom Cry VPN Node Agent (Hardened)
 After=network.target xray.service
 Wants=network.target
 
@@ -238,17 +261,24 @@ Wants=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/freedom-cry
-ExecStart=/opt/freedom-cry/agent \\
-  --api "${API_URL}" \\
-  --node-id "${NODE_ID}" \\
-  --secret "${NODE_SECRET}" \\
-  --xray-config "/usr/local/etc/xray/config.json" \\
-  --awg-config "/etc/amnezia/amneziawg/awg0.conf" \\
-  --interval 15 \\
-  --dry-run=false
+EnvironmentFile=/etc/freedom-cry/agent.env
+ExecStart=/opt/freedom-cry/agent --interval 15 --dry-run=false
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
+
+# Systemd Sandboxing & Privilege Hardening Directives
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+ReadWritePaths=/opt/freedom-cry /usr/local/etc/xray /etc/amnezia/amneziawg /var/log/xray /etc/freedom-cry
 
 [Install]
 WantedBy=multi-user.target
@@ -258,7 +288,7 @@ systemctl daemon-reload
 if [[ -f "$AGENT_BIN" ]]; then
     systemctl enable freedom-cry-agent
     systemctl restart freedom-cry-agent
-    echo -e "${GREEN}✓ Сервис freedom-cry-agent запущен и включен в автозагрузку${NC}"
+    echo -e "${GREEN}✓ Защищенный сервис freedom-cry-agent запущен и включен в автозагрузку${NC}"
 fi
 
 # 9. Optional: Setup Covert Whitelist Tunnel Exit Node

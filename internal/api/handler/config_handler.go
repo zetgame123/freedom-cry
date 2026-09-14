@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"html/template"
 	"net/http"
 	"strings"
 
@@ -30,12 +32,17 @@ func (h *ConfigHandler) GetSubscription(c *gin.Context) {
 	token := c.Param("token")
 	sub, err := h.subServ.GetByToken(token)
 	if err != nil || !sub.IsValid() {
+		c.Header("Referrer-Policy", "no-referrer")
 		c.String(http.StatusForbidden, "Subscription expired, invalid or traffic limit reached")
 		return
 	}
 
-	// Add standard Subscription-Userinfo header for modern clients
-	// format: upload=0; download=bytes; total=bytes; expire=timestamp
+	// Security headers
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+
+	// Standard Subscription-Userinfo header for modern clients
 	userInfo := fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d",
 		sub.TrafficUsedBytes, sub.TrafficLimitBytes, sub.ExpiresAt.Unix())
 	c.Header("Subscription-Userinfo", userInfo)
@@ -43,7 +50,7 @@ func (h *ConfigHandler) GetSubscription(c *gin.Context) {
 
 	var vlessLinks []string
 	for _, key := range sub.ClientKeys {
-		if key.Node.VlessEnabled && key.VlessUUID != "" {
+		if key.Node.VlessEnabled && key.VlessUUID != "" && !key.Node.IsRevoked {
 			link := xray.BuildVlessLink(
 				key.VlessUUID,
 				key.Node.Host,
@@ -57,7 +64,7 @@ func (h *ConfigHandler) GetSubscription(c *gin.Context) {
 		}
 	}
 
-	// If requested by a web browser, render a beautiful HTML status page
+	// If requested by a web browser, render a secure HTML status page with contextual escaping
 	accept := c.GetHeader("Accept")
 	userAgent := strings.ToLower(c.GetHeader("User-Agent"))
 	if strings.Contains(accept, "text/html") && !strings.Contains(userAgent, "v2ray") && !strings.Contains(userAgent, "clash") && !strings.Contains(userAgent, "sing-box") {
@@ -78,13 +85,18 @@ func (h *ConfigHandler) GetRawVless(c *gin.Context) {
 	token := c.Param("token")
 	sub, err := h.subServ.GetByToken(token)
 	if err != nil || !sub.IsValid() {
+		c.Header("Referrer-Policy", "no-referrer")
 		c.String(http.StatusForbidden, "Subscription invalid or expired")
 		return
 	}
 
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+
 	var vlessLinks []string
 	for _, key := range sub.ClientKeys {
-		if key.Node.VlessEnabled && key.VlessUUID != "" {
+		if key.Node.VlessEnabled && key.VlessUUID != "" && !key.Node.IsRevoked {
 			link := xray.BuildVlessLink(
 				key.VlessUUID,
 				key.Node.Host,
@@ -102,7 +114,7 @@ func (h *ConfigHandler) GetRawVless(c *gin.Context) {
 	c.String(http.StatusOK, strings.Join(vlessLinks, "\n"))
 }
 
-// GetAmneziaWGConfig handles /sub/:token/awg/:node_id (Downloads .conf for AmneziaVPN / WireGuard)
+// GetAmneziaWGConfig handles /sub/:token/awg/:node_id (Downloads .conf template for AmneziaVPN / WireGuard)
 func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 	token := c.Param("token")
 	nodeIDStr := c.Param("node_id")
@@ -119,6 +131,10 @@ func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 		return
 	}
 
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+
 	var targetKey *models.ClientKey
 	for _, k := range sub.ClientKeys {
 		if k.NodeID == nodeID {
@@ -127,13 +143,17 @@ func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 		}
 	}
 
-	if targetKey == nil || targetKey.AwgPrivateKey == "" {
-		c.String(http.StatusNotFound, "AmneziaWG credentials not found for this node")
+	if targetKey == nil || targetKey.Node.IsRevoked {
+		c.String(http.StatusNotFound, "AmneziaWG node not found or inactive")
 		return
 	}
 
+	// NOTE: Zero Trust / Client Private Key Security:
+	// Master NEVER stores client private key in the database!
+	// The downloaded configuration contains the assigned IP and server public key,
+	// prompting the client to supply their local private key.
 	confParams := amneziawg.ClientConfigParams{
-		ClientPrivateKey: targetKey.AwgPrivateKey,
+		ClientPrivateKey: "<INSERT_YOUR_LOCAL_CLIENT_PRIVATE_KEY_HERE>",
 		ClientAddress:    targetKey.AwgAddress,
 		DNS:              h.cfg.App.DefaultDNS,
 		Jc:               targetKey.Node.AwgJc,
@@ -153,7 +173,7 @@ func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 
 	confContent, err := amneziawg.GenerateClientConfig(confParams)
 	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to generate config: "+err.Error())
+		c.String(http.StatusInternalServerError, "Failed to generate config")
 		return
 	}
 
@@ -172,6 +192,10 @@ func (h *ConfigHandler) GetSubInfo(c *gin.Context) {
 		return
 	}
 
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+
 	type NodeLinkInfo struct {
 		NodeID     uuid.UUID `json:"node_id"`
 		NodeName   string    `json:"node_name"`
@@ -182,6 +206,9 @@ func (h *ConfigHandler) GetSubInfo(c *gin.Context) {
 
 	var nodes []NodeLinkInfo
 	for _, k := range sub.ClientKeys {
+		if k.Node.IsRevoked {
+			continue
+		}
 		vless := ""
 		if k.Node.VlessEnabled && k.VlessUUID != "" {
 			vless = xray.BuildVlessLink(
@@ -206,22 +233,37 @@ func (h *ConfigHandler) GetSubInfo(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"subscription_id":    sub.ID,
-		"status":             sub.Status,
-		"plan_name":          sub.Plan.Name,
-		"expires_at":         sub.ExpiresAt,
+		"subscription_id":     sub.ID,
+		"status":              sub.Status,
+		"plan_name":           sub.Plan.Name,
+		"expires_at":          sub.ExpiresAt,
 		"traffic_limit_bytes": sub.TrafficLimitBytes,
 		"traffic_used_bytes":  sub.TrafficUsedBytes,
-		"nodes":              nodes,
+		"nodes":               nodes,
 	})
 }
 
-func (h *ConfigHandler) renderHTMLPage(c *gin.Context, sub *models.Subscription, vlessLinks []string) {
-	html := fmt.Sprintf(`<!DOCTYPE html>
+type htmlPageData struct {
+	PlanName        string
+	Status          string
+	ExpiresAt       string
+	SubscriptionURL string
+	Nodes           []htmlNodeData
+}
+
+type htmlNodeData struct {
+	Name       string
+	Country    string
+	VlessLink  string
+	AwgConfURL string
+}
+
+const subscriptionTemplateHTML = `<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
     <title>Freedom Cry VPN - Подписка</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; margin: 0; padding: 20px; }
@@ -238,47 +280,84 @@ func (h *ConfigHandler) renderHTMLPage(c *gin.Context, sub *models.Subscription,
 <body>
     <div class="container">
         <h1>🦅 Freedom Cry VPN</h1>
-        <p>Тариф: <strong>%s</strong> <span class="badge">%s</span></p>
-        <p>Истекает: <strong>%s</strong></p>
+        <p>Тариф: <strong>{{.PlanName}}</strong> <span class="badge">{{.Status}}</span></p>
+        <p>Истекает: <strong>{{.ExpiresAt}}</strong></p>
 
         <div class="section">
             <h3>🔗 Ссылка для автоматической подписки</h3>
             <p>Вставьте эту ссылку в приложения (v2rayN, Sing-box, Clash Verge, NekoBox, Streisand):</p>
-            <div class="code-box">%s/sub/%s</div>
+            <div class="code-box">{{.SubscriptionURL}}</div>
         </div>
 
         <div class="section">
             <h3>⚡ Доступные серверы и протоколы</h3>
-`, sub.Plan.Name, sub.Status, sub.ExpiresAt.Format("02.01.2006 15:04"), h.cfg.App.BaseURL, sub.Token)
-
-	for _, k := range sub.ClientKeys {
-		vless := xray.BuildVlessLink(
-			k.VlessUUID,
-			k.Node.Host,
-			k.Node.VlessPort,
-			k.Node.RealityPubKey,
-			k.Node.RealityServerName,
-			k.Node.RealityShortID,
-			k.Node.Name,
-		)
-		awgURL := fmt.Sprintf("%s/sub/%s/awg/%s", h.cfg.App.BaseURL, sub.Token, k.NodeID)
-
-		html += fmt.Sprintf(`
+            {{range .Nodes}}
             <div class="node-card">
-                <h4>🌍 %s (%s)</h4>
+                <h4>🌍 {{.Name}} ({{.Country}})</h4>
+                {{if .VlessLink}}
                 <p><strong>VLESS + Reality (Xray):</strong></p>
-                <div class="code-box">%s</div>
+                <div class="code-box">{{.VlessLink}}</div>
+                {{end}}
+                {{if .AwgConfURL}}
                 <p><strong>AmneziaWG (Анти-ТСПУ):</strong></p>
-                <a class="button" href="%s">Скачать .conf для AmneziaVPN</a>
-            </div>`, k.Node.Name, k.Node.Country, vless, awgURL)
-	}
-
-	html += `
+                <a class="button" href="{{.AwgConfURL}}">Скачать .conf для AmneziaVPN</a>
+                {{end}}
+            </div>
+            {{end}}
         </div>
     </div>
 </body>
 </html>`
 
+var parsedSubTemplate = template.Must(template.New("subscriptionPage").Parse(subscriptionTemplateHTML))
+
+func (h *ConfigHandler) renderHTMLPage(c *gin.Context, sub *models.Subscription, vlessLinks []string) {
+	// Strict Content Security Policy and privacy headers
+	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self'; script-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none';")
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("X-Frame-Options", "DENY")
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+
+	data := htmlPageData{
+		PlanName:        sub.Plan.Name,
+		Status:          string(sub.Status),
+		ExpiresAt:       sub.ExpiresAt.Format("02.01.2006 15:04"),
+		SubscriptionURL: fmt.Sprintf("%s/sub/%s", h.cfg.App.BaseURL, sub.Token),
+	}
+
+	for _, k := range sub.ClientKeys {
+		if k.Node.IsRevoked {
+			continue
+		}
+		vless := ""
+		if k.Node.VlessEnabled && k.VlessUUID != "" {
+			vless = xray.BuildVlessLink(
+				k.VlessUUID,
+				k.Node.Host,
+				k.Node.VlessPort,
+				k.Node.RealityPubKey,
+				k.Node.RealityServerName,
+				k.Node.RealityShortID,
+				k.Node.Name,
+			)
+		}
+		awgURL := fmt.Sprintf("%s/sub/%s/awg/%s", h.cfg.App.BaseURL, sub.Token, k.NodeID)
+
+		data.Nodes = append(data.Nodes, htmlNodeData{
+			Name:       k.Node.Name,
+			Country:    k.Node.Country,
+			VlessLink:  vless,
+			AwgConfURL: awgURL,
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := parsedSubTemplate.Execute(&buf, data); err != nil {
+		c.String(http.StatusInternalServerError, "Error rendering page")
+		return
+	}
+
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.String(http.StatusOK, html)
+	c.String(http.StatusOK, buf.String())
 }

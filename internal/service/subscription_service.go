@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type SubscriptionService struct {
@@ -35,8 +36,8 @@ func (s *SubscriptionService) CreateSubscription(userID, planID uuid.UUID) (*mod
 		return nil, errors.New("plan not found")
 	}
 
-	// Generate random 32-char subscription token
-	tokenBytes := make([]byte, 16)
+	// Generate cryptographically secure 256-bit (64-char hex) subscription token
+	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		return nil, err
 	}
@@ -62,7 +63,7 @@ func (s *SubscriptionService) CreateSubscription(userID, planID uuid.UUID) (*mod
 
 		// Provision client keys for each active node
 		var nodes []models.ServerNode
-		if err := tx.Where("is_online = ?", true).Find(&nodes).Error; err != nil {
+		if err := tx.Where("is_online = ? AND is_revoked = ?", true, false).Find(&nodes).Error; err != nil {
 			return err
 		}
 
@@ -70,18 +71,28 @@ func (s *SubscriptionService) CreateSubscription(userID, planID uuid.UUID) (*mod
 			// VLESS UUID
 			vlessUUID := uuid.New().String()
 
-			// AWG keypair
+			// Generate initial AWG client keypair
+			// NOTE: Only the Public Key is retained on Master.
+			// Private key is never persisted in PostgreSQL!
 			awgKP, err := amneziawg.GenerateAWGKeyPair()
 			if err != nil {
 				return err
 			}
 
-			// Allocate IP: count existing keys for this node + 2 (10.8.0.2 .. 10.8.0.254)
-			var keyCount int64
-			tx.Model(&models.ClientKey{}).Where("node_id = ?", node.ID).Count(&keyCount)
-			clientOctet := (keyCount % 250) + 2
-			subnetOctet := (keyCount / 250)
+			// Atomic concurrency-safe IP allocation with row-level locking:
+			var lockedNode models.ServerNode
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedNode, "id = ?", node.ID).Error; err != nil {
+				return err
+			}
+
+			lockedNode.LastAllocatedIP++
+			clientOctet := (lockedNode.LastAllocatedIP % 250) + 2
+			subnetOctet := (lockedNode.LastAllocatedIP / 250) % 255
 			clientIP := fmt.Sprintf("10.8.%d.%d/32", subnetOctet, clientOctet)
+
+			if err := tx.Model(&models.ServerNode{}).Where("id = ?", lockedNode.ID).Update("last_allocated_ip", lockedNode.LastAllocatedIP).Error; err != nil {
+				return err
+			}
 
 			clientKey := models.ClientKey{
 				SubscriptionID:  sub.ID,
@@ -89,7 +100,6 @@ func (s *SubscriptionService) CreateSubscription(userID, planID uuid.UUID) (*mod
 				Protocol:        models.ProtocolVless,
 				VlessUUID:       vlessUUID,
 				AwgAddress:      clientIP,
-				AwgPrivateKey:   awgKP.PrivateKey,
 				AwgPublicKey:    awgKP.PublicKey,
 				AwgPresharedKey: awgKP.PresharedKey,
 			}
@@ -112,6 +122,10 @@ func (s *SubscriptionService) CreateSubscription(userID, planID uuid.UUID) (*mod
 }
 
 func (s *SubscriptionService) GetByToken(token string) (*models.Subscription, error) {
+	if len(token) < 16 {
+		return nil, errors.New("invalid token format")
+	}
+
 	var sub models.Subscription
 	err := s.db.
 		Preload("Plan").

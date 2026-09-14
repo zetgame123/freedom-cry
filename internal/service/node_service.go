@@ -1,6 +1,9 @@
 package service
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -28,25 +31,19 @@ type CreateNodeDTO struct {
 	VlessPort         int    `json:"vless_port"`
 	AwgPort           int    `json:"awg_port"`
 	RealityServerName string `json:"reality_server_name"`
+	PublicKey         string `json:"public_key"` // Optional Ed25519 node identity public key
 }
 
-func (s *NodeService) CreateNode(dto CreateNodeDTO) (*models.ServerNode, error) {
-	// Auto-generate Reality keypair and ShortID
-	realityKeys, err := xray.GenerateRealityKeyPair()
-	if err != nil {
-		return nil, err
+// CreateNode registers a new node and generates a unique, cryptographically strong enrollment token.
+// Server private keys are NEVER generated or stored on Master.
+func (s *NodeService) CreateNode(dto CreateNodeDTO) (*models.ServerNode, string, error) {
+	// Generate unique enrollment token
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, "", err
 	}
-
-	// Auto-generate AmneziaWG keypair and obfuscation params
-	awgKeys, err := amneziawg.GenerateAWGKeyPair()
-	if err != nil {
-		return nil, err
-	}
-
-	awgParams, err := amneziawg.GenerateDefaultObfuscationParams()
-	if err != nil {
-		return nil, err
-	}
+	enrollmentToken := hex.EncodeToString(tokenBytes)
+	tokenHash := sha256.Sum256([]byte(enrollmentToken))
 
 	vlessPort := dto.VlessPort
 	if vlessPort <= 0 {
@@ -63,15 +60,23 @@ func (s *NodeService) CreateNode(dto CreateNodeDTO) (*models.ServerNode, error) 
 		sni = "dl.google.com"
 	}
 
+	// Generate initial placeholder public keys if not yet supplied by node
+	realityKeys, _ := xray.GenerateRealityKeyPair()
+	awgKeys, _ := amneziawg.GenerateAWGKeyPair()
+	awgParams, _ := amneziawg.GenerateDefaultObfuscationParams()
+
 	node := models.ServerNode{
 		Name:              dto.Name,
 		Country:           dto.Country,
 		CountryCode:       dto.CountryCode,
 		Host:              dto.Host,
 		IsOnline:          true,
+		IsRevoked:         false,
+		AuthTokenHash:     hex.EncodeToString(tokenHash[:]),
+		PublicKey:         dto.PublicKey,
+		LastAllocatedIP:   1,
 		VlessEnabled:      true,
 		VlessPort:         vlessPort,
-		RealityPrivKey:    realityKeys.PrivateKey,
 		RealityPubKey:     realityKeys.PublicKey,
 		RealityShortID:    realityKeys.ShortID,
 		RealityServerName: sni,
@@ -79,7 +84,6 @@ func (s *NodeService) CreateNode(dto CreateNodeDTO) (*models.ServerNode, error) 
 		AwgEnabled:      true,
 		AwgPort:         awgPort,
 		AwgServerSubnet: "10.8.0.0/24",
-		AwgPrivKey:      awgKeys.PrivateKey,
 		AwgPubKey:       awgKeys.PublicKey,
 		AwgJc:           awgParams.Jc,
 		AwgJmin:         awgParams.Jmin,
@@ -93,15 +97,15 @@ func (s *NodeService) CreateNode(dto CreateNodeDTO) (*models.ServerNode, error) 
 	}
 
 	if err := s.db.Create(&node).Error; err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return &node, nil
+	return &node, enrollmentToken, nil
 }
 
 func (s *NodeService) GetAll() ([]models.ServerNode, error) {
 	var nodes []models.ServerNode
-	if err := s.db.Find(&nodes).Error; err != nil {
+	if err := s.db.Where("is_revoked = ?", false).Find(&nodes).Error; err != nil {
 		return nil, err
 	}
 	return nodes, nil
@@ -109,7 +113,7 @@ func (s *NodeService) GetAll() ([]models.ServerNode, error) {
 
 func (s *NodeService) GetActiveNodes() ([]models.ServerNode, error) {
 	var nodes []models.ServerNode
-	if err := s.db.Where("is_online = ?", true).Find(&nodes).Error; err != nil {
+	if err := s.db.Where("is_online = ? AND is_revoked = ?", true, false).Find(&nodes).Error; err != nil {
 		return nil, err
 	}
 	return nodes, nil
@@ -125,7 +129,7 @@ func (s *NodeService) GetByID(id uuid.UUID) (*models.ServerNode, error) {
 
 func (s *NodeService) RecordHeartbeat(nodeID uuid.UUID, loadPercent int) error {
 	now := time.Now()
-	res := s.db.Model(&models.ServerNode{}).Where("id = ?", nodeID).Updates(map[string]interface{}{
+	res := s.db.Model(&models.ServerNode{}).Where("id = ? AND is_revoked = ?", nodeID, false).Updates(map[string]interface{}{
 		"load_percent": loadPercent,
 		"is_online":    true,
 		"last_seen_at": &now,
@@ -134,7 +138,36 @@ func (s *NodeService) RecordHeartbeat(nodeID uuid.UUID, loadPercent int) error {
 		return res.Error
 	}
 	if res.RowsAffected == 0 {
-		return errors.New("node not found")
+		return errors.New("node not found or revoked")
 	}
 	return nil
+}
+
+func (s *NodeService) RegisterNodeKeys(nodeID uuid.UUID, realityPubKey, realityShortID, awgPubKey, nodeIdentityPubKey string) error {
+	updates := map[string]interface{}{}
+	if realityPubKey != "" {
+		updates["reality_pub_key"] = realityPubKey
+	}
+	if realityShortID != "" {
+		updates["reality_short_id"] = realityShortID
+	}
+	if awgPubKey != "" {
+		updates["awg_pub_key"] = awgPubKey
+	}
+	if nodeIdentityPubKey != "" {
+		updates["public_key"] = nodeIdentityPubKey
+	}
+
+	if len(updates) == 0 {
+		return nil
+	}
+
+	return s.db.Model(&models.ServerNode{}).Where("id = ? AND is_revoked = ?", nodeID, false).Updates(updates).Error
+}
+
+func (s *NodeService) RevokeNode(nodeID uuid.UUID) error {
+	return s.db.Model(&models.ServerNode{}).Where("id = ?", nodeID).Updates(map[string]interface{}{
+		"is_revoked": true,
+		"is_online":  false,
+	}).Error
 }
