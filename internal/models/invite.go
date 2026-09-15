@@ -25,7 +25,7 @@ type InviteCode struct {
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// GenerateInviteCode creates a cryptographically random invite code with 128-bit entropy (FC-SEC-10)
+// GenerateInviteCode creates a cryptographically random invite code with full 128-bit entropy (FC-SEC-10)
 func GenerateInviteCode(prefix string) (string, error) {
 	bytes := make([]byte, 16)
 	if _, err := rand.Read(bytes); err != nil {
@@ -35,5 +35,9 @@ func GenerateInviteCode(prefix string) (string, error) {
 	if prefix == "" {
 		prefix = "FC"
 	}
-	return fmt.Sprintf("%s-%s-%s-%s-%s", prefix, h[:4], h[4:8], h[8:12], h[12:16]), nil
+	return fmt.Sprintf("%s-%s-%s-%s-%s-%s-%s-%s-%s",
+		prefix,
+		h[0:4], h[4:8], h[8:12], h[12:16],
+		h[16:20], h[20:24], h[24:28], h[28:32],
+	), nil
 }

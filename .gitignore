@@ -16,9 +16,16 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-# Environment and secrets
+# Environment, configs and secrets
 .env
 *.local
+config.yaml
+client-bot-sessions.json
+node-keys.json
+*.key
+*.pem
+*.session
+
 
 # IDEs
 .idea/

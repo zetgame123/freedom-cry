@@ -44,7 +44,7 @@ func main() {
 	token := flag.String("token", os.Getenv("TELEGRAM_BOT_TOKEN"), "Telegram Bot API Token")
 	apiURL := flag.String("api", os.Getenv("API_BASE_URL"), "Freedom Cry API Base URL (internal)")
 	publicURL := flag.String("public-url", os.Getenv("PUBLIC_BASE_URL"), "Freedom Cry Public Base URL (for client configs)")
-	sessionsPath := flag.String("sessions", os.Getenv("SESSIONS_PATH"), "Path to persistent bot sessions file")
+	sessionsPath := flag.String("sessions", os.Getenv("SESSIONS_PATH"), "Path to persistent bot sessions file (default: empty for ephemeral in-memory sessions)")
 	flag.Parse()
 
 	if *token == "" {
@@ -57,14 +57,16 @@ func main() {
 	if *publicURL == "" {
 		*publicURL = *apiURL
 	}
-	if *sessionsPath == "" {
-		*sessionsPath = "client-bot-sessions.json"
+
+	sessionsMode := "ephemeral in-memory (Zero-Knowledge: no disk writes)"
+	if *sessionsPath != "" {
+		sessionsMode = *sessionsPath
 	}
 
 	log.Println("==================================================")
 	log.Println("    🤖 Freedom Cry Client Telegram Bot Started    ")
 	log.Println("==================================================")
-	log.Printf("Target API: %s | Public URL: %s | Sessions: %s", *apiURL, *publicURL, *sessionsPath)
+	log.Printf("Target API: %s | Public URL: %s | Sessions: %s", *apiURL, *publicURL, sessionsMode)
 
 	app := &ClientBotApp{
 		bot:          telegram.NewBot(*token),

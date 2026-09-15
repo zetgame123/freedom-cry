@@ -187,12 +187,14 @@ func isAllowedOrigin(origin string, cfg *config.Config) bool {
 	if origin == "" {
 		return false
 	}
-	if cfg.App.BaseURL != "" && strings.HasPrefix(origin, cfg.App.BaseURL) {
+	base := strings.TrimRight(cfg.App.BaseURL, "/")
+	if base != "" && origin == base {
 		return true
 	}
 	// In debug mode, allow localhost for development
 	if cfg.Server.Mode != "release" {
-		if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") {
+		if origin == "http://localhost" || origin == "http://127.0.0.1" ||
+			strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:") {
 			return true
 		}
 	}
