@@ -51,6 +51,7 @@ func Connect(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 		&models.ClientKey{},
 		&models.Transaction{},
 		&models.RedeemedBlindToken{},
+		&models.InviteCode{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
@@ -191,6 +192,26 @@ func SeedDefaults(db *gorm.DB) {
 			if err := db.Create(&demoNode).Error; err == nil {
 				log.Printf("[Seed] Demo server node created. One-time node enrollment token: %s", tokenHex)
 			}
+		}
+	}
+
+	// 4. Seed Default Invite Code if none exists
+	var inviteCount int64
+	db.Model(&models.InviteCode{}).Count(&inviteCount)
+	if inviteCount == 0 {
+		masterCode := os.Getenv("MASTER_INVITE_CODE")
+		if masterCode == "" {
+			masterCode = "FC-FREEDOM-2026"
+		}
+		defaultInvite := models.InviteCode{
+			Code:        masterCode,
+			Description: "Master Initial Invite (Unlimited)",
+			MaxUses:     0, // unlimited
+			UsesCount:   0,
+			IsActive:    true,
+		}
+		if err := db.Create(&defaultInvite).Error; err == nil {
+			log.Printf("[Seed] Master Invite Code created: %s", masterCode)
 		}
 	}
 }

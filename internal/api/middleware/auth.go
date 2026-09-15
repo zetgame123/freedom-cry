@@ -56,6 +56,15 @@ const (
 
 func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Allow administrative operations if X-Admin-Secret matches configured admin secret
+		adminSecretHeader := c.GetHeader("X-Admin-Secret")
+		if adminSecretHeader != "" && cfg.App.AdminSecret != "" && subtle.ConstantTimeCompare([]byte(adminSecretHeader), []byte(cfg.App.AdminSecret)) == 1 {
+			c.Set(ContextUserID, uuid.Nil)
+			c.Set(ContextUserRole, models.RoleAdmin)
+			c.Next()
+			return
+		}
+
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization header required"})

@@ -31,8 +31,9 @@ func TestSubscriptionPage_XSS_And_CSP(t *testing.T) {
 	blindServ, _ := service.NewBlindTokenService(db)
 	multiHopServ := service.NewMultiHopService(db, subServ)
 	autoHealingServ := service.NewAutoHealingService(db, nil)
+	inviteServ := service.NewInviteService(db, cfg, userServ, subServ)
 
-	router := api.SetupRouter(cfg, db, userServ, nodeServ, subServ, billingServ, blindServ, multiHopServ, autoHealingServ)
+	router := api.SetupRouter(cfg, db, userServ, nodeServ, subServ, billingServ, blindServ, multiHopServ, autoHealingServ, inviteServ)
 
 	// Create test user and plan with XSS payload in Plan name
 	user := models.User{

@@ -66,10 +66,13 @@ func main() {
 	}
 	autoHealingServ := service.NewAutoHealingService(db, cloudProv)
 
+	// Invite Code & Whitelist service
+	inviteServ := service.NewInviteService(db, cfg, userServ, subServ)
+
 	// Router setup
 	router := api.SetupRouter(
 		cfg, db, userServ, nodeServ, subServ, billingServ,
-		blindServ, multiHopServ, autoHealingServ,
+		blindServ, multiHopServ, autoHealingServ, inviteServ,
 	)
 
 	srv := &http.Server{

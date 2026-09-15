@@ -45,9 +45,11 @@ type JWTConfig struct {
 }
 
 type AppConfig struct {
-	BaseURL     string `yaml:"base_url"`      // e.g. http://localhost:8080 or https://vpn.freedomcry.net
-	NodeSecret  string `yaml:"node_secret"`   // Secret key used by node agents for sync
-	DefaultDNS  string `yaml:"default_dns"`   // e.g. 1.1.1.1, 8.8.8.8
+	BaseURL          string `yaml:"base_url"`           // e.g. http://localhost:8080 or https://vpn.freedomcry.net
+	NodeSecret       string `yaml:"node_secret"`        // Secret key used by node agents for sync
+	DefaultDNS       string `yaml:"default_dns"`        // e.g. 1.1.1.1, 8.8.8.8
+	AdminSecret      string `yaml:"admin_secret"`       // Admin MFA secret for operational endpoints
+	MasterInviteCode string `yaml:"master_invite_code"` // Universal master invite code (fallback)
 }
 
 func Load(path string) (*Config, error) {
@@ -74,9 +76,11 @@ func Load(path string) (*Config, error) {
 			Expiry: 72 * time.Hour,
 		},
 		App: AppConfig{
-			BaseURL:    "http://localhost:8080",
-			NodeSecret: "fc-node-secret-token-key-2026",
-			DefaultDNS: "1.1.1.1, 8.8.8.8",
+			BaseURL:          "http://localhost:8080",
+			NodeSecret:       "fc-node-secret-token-key-2026",
+			DefaultDNS:       "1.1.1.1, 8.8.8.8",
+			AdminSecret:      "fc-admin-secret-2026",
+			MasterInviteCode: "FC-FREEDOM-2026",
 		},
 	}
 
@@ -136,6 +140,14 @@ func Load(path string) (*Config, error) {
 	}
 	if val := os.Getenv("DEFAULT_DNS"); val != "" {
 		cfg.App.DefaultDNS = val
+	}
+	if val := os.Getenv("ADMIN_MFA_SECRET"); val != "" {
+		cfg.App.AdminSecret = val
+	} else if val := os.Getenv("ADMIN_SECRET"); val != "" {
+		cfg.App.AdminSecret = val
+	}
+	if val := os.Getenv("MASTER_INVITE_CODE"); val != "" {
+		cfg.App.MasterInviteCode = val
 	}
 
 	// Security Hardening: Never allow insecure default JWT secret in release mode

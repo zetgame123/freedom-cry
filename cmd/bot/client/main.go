@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,26 +21,30 @@ import (
 )
 
 type ClientBotApp struct {
-	bot        *telegram.Bot
-	apiBase    string
-	publicBase string
-	httpClient *http.Client
-	mu         sync.RWMutex
-	// Ephemeral session cache: chatID -> AccountNumber & Token
-	// Kept strictly in RAM to preserve Zero-Knowledge guarantee
+	bot          *telegram.Bot
+	apiBase      string
+	publicBase   string
+	sessionsPath string
+	httpClient   *http.Client
+	mu           sync.RWMutex
+	// Ephemeral session cache: chatID -> UserSession
 	sessions map[int64]*UserSession
 }
 
 type UserSession struct {
-	AccountNumber string
-	AuthToken     string
-	SubToken      string
+	AccountNumber  string `json:"account_number"`
+	AuthToken      string `json:"auth_token"`
+	SubToken       string `json:"sub_token"`
+	SubscriptionID string `json:"subscription_id,omitempty"`
+	PlanName       string `json:"plan_name,omitempty"`
+	ExpiresAt      string `json:"expires_at,omitempty"`
 }
 
 func main() {
 	token := flag.String("token", os.Getenv("TELEGRAM_BOT_TOKEN"), "Telegram Bot API Token")
 	apiURL := flag.String("api", os.Getenv("API_BASE_URL"), "Freedom Cry API Base URL (internal)")
 	publicURL := flag.String("public-url", os.Getenv("PUBLIC_BASE_URL"), "Freedom Cry Public Base URL (for client configs)")
+	sessionsPath := flag.String("sessions", os.Getenv("SESSIONS_PATH"), "Path to persistent bot sessions file")
 	flag.Parse()
 
 	if *token == "" {
@@ -50,19 +57,25 @@ func main() {
 	if *publicURL == "" {
 		*publicURL = *apiURL
 	}
+	if *sessionsPath == "" {
+		*sessionsPath = "client-bot-sessions.json"
+	}
 
 	log.Println("==================================================")
 	log.Println("    🤖 Freedom Cry Client Telegram Bot Started    ")
 	log.Println("==================================================")
-	log.Printf("Target API: %s | Public URL: %s", *apiURL, *publicURL)
+	log.Printf("Target API: %s | Public URL: %s | Sessions: %s", *apiURL, *publicURL, *sessionsPath)
 
 	app := &ClientBotApp{
-		bot:        telegram.NewBot(*token),
-		apiBase:    *apiURL,
-		publicBase: *publicURL,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
-		sessions:   make(map[int64]*UserSession),
+		bot:          telegram.NewBot(*token),
+		apiBase:      *apiURL,
+		publicBase:   *publicURL,
+		sessionsPath: *sessionsPath,
+		httpClient:   &http.Client{Timeout: 10 * time.Second},
+		sessions:     make(map[int64]*UserSession),
 	}
+
+	app.loadSessions()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -87,6 +100,31 @@ func main() {
 	log.Println("[ClientBot] Exited cleanly.")
 }
 
+func (app *ClientBotApp) loadSessions() {
+	if app.sessionsPath == "" {
+		return
+	}
+	data, err := os.ReadFile(app.sessionsPath)
+	if err != nil {
+		return
+	}
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if err := json.Unmarshal(data, &app.sessions); err == nil {
+		log.Printf("[ClientBot] Loaded %d active sessions from %s", len(app.sessions), app.sessionsPath)
+	}
+}
+
+func (app *ClientBotApp) saveSessionsLocked() {
+	if app.sessionsPath == "" {
+		return
+	}
+	data, err := json.MarshalIndent(app.sessions, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(app.sessionsPath, data, 0600)
+	}
+}
+
 func (app *ClientBotApp) handleUpdate(u telegram.Update) {
 	if u.Message != nil && u.Message.Text != "" {
 		app.handleMessage(u.Message)
@@ -100,11 +138,65 @@ func (app *ClientBotApp) handleUpdate(u telegram.Update) {
 
 func (app *ClientBotApp) handleMessage(msg *telegram.Message) {
 	chatID := msg.Chat.ID
-	text := msg.Text
+	text := strings.TrimSpace(msg.Text)
 
+	// Check if user already has an active session with a valid sub token
+	app.mu.RLock()
+	sess, hasSession := app.sessions[chatID]
+	app.mu.RUnlock()
+
+	// 1. Deep link support: /start <invite_code>
+	if strings.HasPrefix(text, "/start ") {
+		arg := strings.TrimSpace(strings.TrimPrefix(text, "/start "))
+		if arg != "" {
+			app.processInviteCode(chatID, arg)
+			return
+		}
+	}
+
+	// 2. Account restore: /login <account_number>
+	if strings.HasPrefix(text, "/login") {
+		accNum := strings.TrimSpace(strings.TrimPrefix(text, "/login"))
+		if accNum == "" {
+			_, _ = app.bot.SendMessage(chatID, "ℹ️ <b>Использование команды:</b>\n<code>/login XXXX-XXXX-XXXX-XXXX</code>", nil)
+			return
+		}
+		app.processLogin(chatID, accNum)
+		return
+	}
+
+	// 3. User is NOT authenticated yet
+	if !hasSession || sess == nil || sess.SubToken == "" {
+		switch text {
+		case "/start":
+			app.sendInviteGate(chatID)
+		case "/help":
+			app.sendUnauthHelp(chatID)
+		default:
+			// If message looks like an account number
+			cleaned := strings.ReplaceAll(strings.ReplaceAll(text, "-", ""), " ", "")
+			if len(cleaned) == 16 && isDigitsOnly(cleaned) {
+				app.processLogin(chatID, text)
+				return
+			}
+			// Otherwise treat as invite code
+			app.processInviteCode(chatID, text)
+		}
+		return
+	}
+
+	// 4. User IS authenticated
 	switch text {
-	case "/start":
-		app.handleStart(chatID)
+	case "/start", "/menu":
+		app.sendMainMenu(chatID, fmt.Sprintf("🦅 <b>Главное меню Freedom Cry</b>\nАккаунт: <code>%s</code>", sess.AccountNumber))
+	case "/status", "/account":
+		app.sendAccountStatus(chatID, sess)
+	case "/logout":
+		app.mu.Lock()
+		delete(app.sessions, chatID)
+		app.saveSessionsLocked()
+		app.mu.Unlock()
+		_, _ = app.bot.SendMessage(chatID, "👋 Вы вышли из аккаунта. Чтобы войти снова, введите <code>/login НОМЕР-АККАУНТА</code> или активируйте новый инвайт-код.", nil)
 	case "/help":
 		app.sendHelp(chatID)
 	default:
@@ -112,30 +204,245 @@ func (app *ClientBotApp) handleMessage(msg *telegram.Message) {
 	}
 }
 
-func (app *ClientBotApp) handleStart(chatID int64) {
-	app.mu.Lock()
-	sess, exists := app.sessions[chatID]
-	if !exists {
-		// Provision new Zero-Knowledge Anonymous Account
-		accNum, token, subToken := app.provisionAnonymousAccount()
-		sess = &UserSession{
-			AccountNumber: accNum,
-			AuthToken:     token,
-			SubToken:      subToken,
+func (app *ClientBotApp) sendHelp(chatID int64) {
+	text := `ℹ️ <b>Freedom Cry — Доступные команды:</b>
+
+• /menu или /start — Главное меню и конфиги
+• /status или /account — Проверить срок действия подписки
+• /login НОМЕР-АККАУНТА — Вход по номеру аккаунта
+• /logout — Выйти из текущего аккаунта`
+	_, _ = app.bot.SendMessage(chatID, text, nil)
+}
+
+func isDigitsOnly(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
 		}
-		app.sessions[chatID] = sess
 	}
+	return true
+}
+
+func (app *ClientBotApp) sendInviteGate(chatID int64) {
+	text := `🔒 <b>Freedom Cry — Доступ ограничен</b>
+
+Сервис работает в режиме приватной сети по приглашениям.
+
+🔑 Отправьте ваш <b>инвайт-код</b> ответным сообщением для активации подписки.
+
+<i>Если у вас уже есть зарегистрированный аккаунт:</i>
+<code>/login ВАШ-НОМЕР-АККАУНТА</code>`
+
+	_, _ = app.bot.SendMessage(chatID, text, nil)
+}
+
+func (app *ClientBotApp) sendUnauthHelp(chatID int64) {
+	text := `ℹ️ <b>Freedom Cry — Справка</b>
+
+Freedom Cry обеспечивает защищенный доступ в интернет без цензуры с технологиями VLESS Reality и AmneziaWG.
+
+• Для первого входа требуется <b>инвайт-код</b> от администратора.
+• Если у вас уже есть номер аккаунта, используйте команду:
+  <code>/login XXXX-XXXX-XXXX-XXXX</code>`
+
+	_, _ = app.bot.SendMessage(chatID, text, nil)
+}
+
+func (app *ClientBotApp) processInviteCode(chatID int64, code string) {
+	_, _ = app.bot.SendMessage(chatID, "⏳ Проверка инвайт-кода и выпуск ключей шифрования...", nil)
+
+	sess, err := app.registerWithInvite(code)
+	if err != nil {
+		msg := fmt.Sprintf("❌ <b>Не удалось активировать инвайт-код:</b>\n%s\n\nПроверьте код или запросите новый у администратора.", err.Error())
+		_, _ = app.bot.SendMessage(chatID, msg, nil)
+		return
+	}
+
+	app.mu.Lock()
+	app.sessions[chatID] = sess
+	app.saveSessionsLocked()
 	app.mu.Unlock()
 
-	welcome := fmt.Sprintf(`🦅 <b>Добро пожаловать в Freedom Cry!</b>
+	welcome := fmt.Sprintf(`🎉 <b>Инвайт-код успешно активирован!</b>
+
+Добро пожаловать в Freedom Cry!
 
 Ваш анонимный номер аккаунта:
 <code>%s</code>
 
+Тариф: <b>%s</b>
+Срок действия: <b>до %s</b>
+
 🔒 <b>Zero-Knowledge Privacy:</b>
-Мы не собираем ваш email, телефон или имя. Данные вашего Telegram не связаны с VPN-туннелями. Сохраните номер аккаунта для восстановления доступа на других устройствах.`, sess.AccountNumber)
+Мы не сохраняем ваши персональные данные или Telegram username в базе данных туннелей. Сохраните номер аккаунта для восстановления доступа на других устройствах.`, sess.AccountNumber, sess.PlanName, sess.ExpiresAt)
 
 	app.sendMainMenu(chatID, welcome)
+}
+
+func (app *ClientBotApp) processLogin(chatID int64, rawAccount string) {
+	_, _ = app.bot.SendMessage(chatID, "⏳ Проверка аккаунта...", nil)
+
+	sess, err := app.loginWithAccountNumber(rawAccount)
+	if err != nil {
+		_, _ = app.bot.SendMessage(chatID, fmt.Sprintf("❌ <b>Ошибка входа:</b> %s", err.Error()), nil)
+		return
+	}
+
+	app.mu.Lock()
+	app.sessions[chatID] = sess
+	app.saveSessionsLocked()
+	app.mu.Unlock()
+
+	msg := fmt.Sprintf(`✅ <b>Вход выполнен успешно!</b>
+
+С возвращением в Freedom Cry!
+Аккаунт: <code>%s</code>
+Тариф: <b>%s</b>
+Действует до: <b>%s</b>`, sess.AccountNumber, sess.PlanName, sess.ExpiresAt)
+
+	app.sendMainMenu(chatID, msg)
+}
+
+func (app *ClientBotApp) registerWithInvite(inviteCode string) (*UserSession, error) {
+	url := fmt.Sprintf("%s/api/v1/auth/invite/register", app.apiBase)
+	reqBody, _ := json.Marshal(map[string]string{
+		"invite_code": strings.TrimSpace(inviteCode),
+	})
+
+	resp, err := app.httpClient.Post(url, "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("ошибка соединения с сервером: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		var errRes struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(bodyBytes, &errRes)
+		if errRes.Error != "" {
+			return nil, errors.New(errRes.Error)
+		}
+		return nil, fmt.Errorf("код ответа сервера: %d", resp.StatusCode)
+	}
+
+	var res struct {
+		AccountNumber     string `json:"account_number"`
+		Token             string `json:"token"`
+		SubscriptionToken string `json:"subscription_token"`
+		PlanName          string `json:"plan_name"`
+		ExpiresAt         string `json:"expires_at"`
+	}
+	if err := json.Unmarshal(bodyBytes, &res); err != nil {
+		return nil, err
+	}
+
+	sess := &UserSession{
+		AccountNumber: res.AccountNumber,
+		AuthToken:     res.Token,
+		SubToken:      res.SubscriptionToken,
+		PlanName:      res.PlanName,
+		ExpiresAt:     res.ExpiresAt,
+	}
+
+	sess.SubscriptionID = app.fetchActiveSubscriptionID(res.Token)
+	return sess, nil
+}
+
+func (app *ClientBotApp) loginWithAccountNumber(accountNumber string) (*UserSession, error) {
+	url := fmt.Sprintf("%s/api/v1/auth/account/login", app.apiBase)
+	reqBody, _ := json.Marshal(map[string]string{
+		"account_number": strings.TrimSpace(accountNumber),
+	})
+
+	resp, err := app.httpClient.Post(url, "application/json", bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("ошибка соединения с сервером: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New("аккаунт не найден или деактивирован")
+	}
+
+	var authRes struct {
+		Token string `json:"token"`
+		User  struct {
+			AccountNumber string `json:"account_number"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&authRes); err != nil {
+		return nil, err
+	}
+
+	// Fetch user's subscriptions
+	subURL := fmt.Sprintf("%s/api/v1/user/subscriptions", app.apiBase)
+	req, _ := http.NewRequest("GET", subURL, nil)
+	req.Header.Set("Authorization", "Bearer "+authRes.Token)
+
+	subResp, err := app.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer subResp.Body.Close()
+
+	var subData struct {
+		Subscriptions []struct {
+			ID              string `json:"id"`
+			PlanName        string `json:"plan_name"`
+			Status          string `json:"status"`
+			ExpiresAt       string `json:"expires_at"`
+			SubscriptionURL string `json:"subscription_url"`
+		} `json:"subscriptions"`
+	}
+	if err := json.NewDecoder(subResp.Body).Decode(&subData); err != nil {
+		return nil, err
+	}
+
+	if len(subData.Subscriptions) == 0 {
+		return nil, errors.New("у данного аккаунта нет активных подписок")
+	}
+
+	activeSub := subData.Subscriptions[0]
+	parts := strings.Split(activeSub.SubscriptionURL, "/sub/")
+	subToken := ""
+	if len(parts) > 1 {
+		subToken = parts[1]
+	}
+
+	sess := &UserSession{
+		AccountNumber:  authRes.User.AccountNumber,
+		AuthToken:      authRes.Token,
+		SubToken:       subToken,
+		SubscriptionID: activeSub.ID,
+		PlanName:       activeSub.PlanName,
+		ExpiresAt:      activeSub.ExpiresAt,
+	}
+
+	return sess, nil
+}
+
+func (app *ClientBotApp) fetchActiveSubscriptionID(token string) string {
+	url := fmt.Sprintf("%s/api/v1/user/subscriptions", app.apiBase)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := app.httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var subData struct {
+		Subscriptions []struct {
+			ID string `json:"id"`
+		} `json:"subscriptions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&subData); err == nil && len(subData.Subscriptions) > 0 {
+		return subData.Subscriptions[0].ID
+	}
+	return ""
 }
 
 func (app *ClientBotApp) sendMainMenu(chatID int64, text string) {
@@ -151,6 +458,9 @@ func (app *ClientBotApp) sendMainMenu(chatID int64, text string) {
 			},
 			{
 				{Text: "🔄 Ротация ключей", CallbackData: "cmd:rotate"},
+				{Text: "ℹ️ Мой аккаунт", CallbackData: "cmd:account"},
+			},
+			{
 				{Text: "📲 Инструкция по настройке", CallbackData: "cmd:guide"},
 			},
 		},
@@ -166,8 +476,8 @@ func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
 	sess := app.sessions[chatID]
 	app.mu.RUnlock()
 
-	if sess == nil {
-		app.handleStart(chatID)
+	if sess == nil || sess.SubToken == "" {
+		app.sendInviteGate(chatID)
 		return
 	}
 
@@ -182,6 +492,8 @@ func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
 		app.sendProtocolInfo(chatID)
 	case "cmd:rotate":
 		app.rotateKey(chatID, sess)
+	case "cmd:account":
+		app.sendAccountStatus(chatID, sess)
 	case "cmd:guide":
 		app.sendGuides(chatID)
 	}
@@ -202,7 +514,8 @@ func (app *ClientBotApp) sendConfigQR(chatID int64, sess *UserSession) {
 
 Сканируйте в приложении <b>Freedom Cry Client</b>, <b>v2rayNG</b>, <b>NekoBox</b> или <b>Streisand</b>.
 
-🔗 Ссылка: <code>%s</code>`, subURL)
+🔗 Ссылка на подписку:
+<code>%s</code>`, subURL)
 
 	keyboard := telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
@@ -221,7 +534,7 @@ func (app *ClientBotApp) sendSubLink(chatID int64, sess *UserSession) {
 
 <code>%s</code>
 
-Импортируйте её в любой клиент с поддержкой VLESS-Reality или AmneziaWG. Список серверов обновляется автоматически при блокировках.`, subURL)
+Импортируйте её в любой клиент с поддержкой VLESS-Reality или AmneziaWG (v2rayNG, Sing-box, NekoBox, Streisand, Clash). Список серверов обновляется автоматически при блокировках.`, subURL)
 
 	_, _ = app.bot.SendMessage(chatID, text, nil)
 }
@@ -248,6 +561,7 @@ func (app *ClientBotApp) sendSingboxConfig(chatID int64, sess *UserSession) {
 			},
 		},
 	}
+
 	_, _ = app.bot.SendMessage(chatID, text, keyboard)
 }
 
@@ -269,10 +583,65 @@ func (app *ClientBotApp) sendProtocolInfo(chatID int64) {
 	_, _ = app.bot.SendMessage(chatID, text, nil)
 }
 
+func (app *ClientBotApp) sendAccountStatus(chatID int64, sess *UserSession) {
+	plan := sess.PlanName
+	if plan == "" {
+		plan = "Freedom Starter"
+	}
+	expires := sess.ExpiresAt
+	if expires == "" {
+		expires = "Активна"
+	}
+
+	text := fmt.Sprintf(`ℹ️ <b>Информация об аккаунте:</b>
+
+• Номер аккаунта: <code>%s</code>
+• Тарифный план: <b>%s</b>
+• Статус: 🟢 <b>Активен</b>
+• Срок действия: <b>до %s</b>
+
+🔒 Аккаунт полностью анонимен. Для входа на другом устройстве используйте <code>/login %s</code>.`, sess.AccountNumber, plan, expires, sess.AccountNumber)
+
+	_, _ = app.bot.SendMessage(chatID, text, nil)
+}
+
 func (app *ClientBotApp) rotateKey(chatID int64, sess *UserSession) {
+	if sess.SubscriptionID == "" || sess.AuthToken == "" {
+		_, _ = app.bot.SendMessage(chatID, "❌ Не удалось выполнить ротацию: данные подписки отсутствуют.", nil)
+		return
+	}
+
+	url := fmt.Sprintf("%s/api/v1/user/subscriptions/%s/rotate", app.apiBase, sess.SubscriptionID)
+	req, _ := http.NewRequest("POST", url, nil)
+	req.Header.Set("Authorization", "Bearer "+sess.AuthToken)
+
+	resp, err := app.httpClient.Do(req)
+	if err != nil || (resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated) {
+		_, _ = app.bot.SendMessage(chatID, "❌ Ошибка при запросе ротации ключей к серверу.", nil)
+		return
+	}
+	defer resp.Body.Close()
+
+	var res struct {
+		SubscriptionURL string `json:"subscription_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && res.SubscriptionURL != "" {
+		parts := strings.Split(res.SubscriptionURL, "/sub/")
+		if len(parts) > 1 {
+			app.mu.Lock()
+			sess.SubToken = parts[1]
+			app.saveSessionsLocked()
+			app.mu.Unlock()
+		}
+	}
+
 	text := `🔄 <b>Ключи успешно обновлены!</b>
 
-Старый ключ будет активен еще 1 час для плавного переключения без обрыва текущей сессии (Zero-Downtime Grace Period).`
+Ваш токен подписки перевыпущен.
+Старый ключ будет активен еще 1 час для плавного переключения без обрыва текущей сессии (Zero-Downtime Grace Period).
+
+Используйте обновленную ссылку на подписку или QR-код из главного меню.`
+
 	_, _ = app.bot.SendMessage(chatID, text, nil)
 }
 
@@ -292,33 +661,4 @@ func (app *ClientBotApp) sendGuides(chatID int64) {
 <code>freedom-cry-client connect freedomcry://connect?sub=...</code>`
 
 	_, _ = app.bot.SendMessage(chatID, text, nil)
-}
-
-func (app *ClientBotApp) sendHelp(chatID int64) {
-	app.sendMainMenu(chatID, "Помощь по использованию Freedom Cry:")
-}
-
-func (app *ClientBotApp) provisionAnonymousAccount() (accountNum, token, subToken string) {
-	// Request anonymous account from Master API
-	url := fmt.Sprintf("%s/api/v1/auth/account/register", app.apiBase)
-	resp, err := app.httpClient.Post(url, "application/json", bytes.NewReader([]byte("{}")))
-	if err == nil && resp.StatusCode == http.StatusCreated {
-		defer resp.Body.Close()
-		var res struct {
-			AccountNumber string `json:"account_number"`
-			Token         string `json:"token"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&res); err == nil {
-			accountNum = res.AccountNumber
-			token = res.Token
-		}
-	}
-
-	// Fallback mock tokens if server is offline during initial startup
-	if accountNum == "" {
-		accountNum = "7492-1845-9302-8164"
-		token = "fc-ephemeral-jwt"
-	}
-	subToken = "sub-token-" + accountNum[len(accountNum)-4:]
-	return accountNum, token, subToken
 }

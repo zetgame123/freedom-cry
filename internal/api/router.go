@@ -24,6 +24,7 @@ func SetupRouter(
 	blindServ *service.BlindTokenService,
 	multiHopServ *service.MultiHopService,
 	autoHealingServ *service.AutoHealingService,
+	inviteServ *service.InviteService,
 ) *gin.Engine {
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -77,6 +78,7 @@ func SetupRouter(
 	blindH := handler.NewBlindHandler(blindServ)
 	routeH := handler.NewRouteHandler(multiHopServ)
 	probeH := handler.NewProbeHandler(db, nodeServ, autoHealingServ, os.Getenv("PROBE_SECRET"))
+	inviteH := handler.NewInviteHandler(inviteServ)
 
 	// Health check
 	r.GET("/health", func(c *gin.Context) {
@@ -110,6 +112,9 @@ func SetupRouter(
 			// Phase 1: Zero-Knowledge Anonymous 16-digit Account registration & login
 			authGroup.POST("/account/register", authH.AccountRegister)
 			authGroup.POST("/account/login", authH.AccountLogin)
+			// Phase 1.5: Option A Whitelist & Invite-code registration
+			authGroup.POST("/invite/register", inviteH.RegisterWithInvite)
+			authGroup.POST("/invite/validate", inviteH.ValidateInvite)
 		}
 
 		// Public Plans
@@ -163,6 +168,11 @@ func SetupRouter(
 		{
 			adminGroup.POST("/nodes", nodeH.AdminCreateNode)
 			adminGroup.POST("/billing/transactions/:id/complete", billingH.CompleteDepositManual)
+
+			// Invite Code Management
+			adminGroup.GET("/invites", inviteH.ListInvites)
+			adminGroup.POST("/invites", inviteH.CreateInvite)
+			adminGroup.DELETE("/invites/:id", inviteH.RevokeInvite)
 		}
 	}
 
