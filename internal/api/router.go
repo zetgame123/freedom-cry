@@ -32,6 +32,7 @@ func SetupRouter(
 	}
 
 	r := gin.New()
+	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
 	r.Use(gin.Recovery())
 	// SECURITY & PRIVACY (FC-04): Use PrivacyLogger to mask subscription tokens
 	// and suppress recording user home IP addresses in logs.
