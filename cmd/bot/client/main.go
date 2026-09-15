@@ -189,6 +189,14 @@ func (app *ClientBotApp) handleMessage(msg *telegram.Message) {
 	switch text {
 	case "/start", "/menu":
 		app.sendMainMenu(chatID, fmt.Sprintf("🦅 <b>Главное меню Freedom Cry</b>\nАккаунт: <code>%s</code>", sess.AccountNumber))
+	case "/config", "/qr", "/vless":
+		app.sendConfigQR(chatID, sess)
+	case "/sub", "/subscription":
+		app.sendSubLink(chatID, sess)
+	case "/singbox":
+		app.sendSingboxConfig(chatID, sess)
+	case "/awg", "/amnezia", "/wireguard":
+		app.sendAmneziaConfig(chatID, sess)
 	case "/status", "/account":
 		app.sendAccountStatus(chatID, sess)
 	case "/logout":
@@ -449,23 +457,27 @@ func (app *ClientBotApp) sendMainMenu(chatID int64, text string) {
 	keyboard := telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{
-				{Text: "⚡ Конфиг / QR-код", CallbackData: "cmd:qr"},
-				{Text: "📋 Ссылка на подписку", CallbackData: "cmd:sublink"},
+				{Text: "⚡ VLESS ключ / QR", CallbackData: "cmd:qr"},
+				{Text: "📋 Ссылка подписки", CallbackData: "cmd:sublink"},
 			},
 			{
-				{Text: "📱 Sing-box (JSON профиль)", CallbackData: "cmd:singbox"},
+				{Text: "📱 Sing-box JSON", CallbackData: "cmd:singbox"},
+				{Text: "🛡️ AmneziaWG (.conf)", CallbackData: "cmd:awg"},
+			},
+			{
 				{Text: "🌐 Протоколы", CallbackData: "cmd:proto"},
-			},
-			{
-				{Text: "🔄 Ротация ключей", CallbackData: "cmd:rotate"},
 				{Text: "ℹ️ Мой аккаунт", CallbackData: "cmd:account"},
 			},
 			{
-				{Text: "📲 Инструкция по настройке", CallbackData: "cmd:guide"},
+				{Text: "🔄 Ротация ключей", CallbackData: "cmd:rotate"},
+				{Text: "📲 Инструкция", CallbackData: "cmd:guide"},
 			},
 		},
 	}
-	_, _ = app.bot.SendMessage(chatID, text, keyboard)
+	_, err := app.bot.SendMessage(chatID, text, keyboard)
+	if err != nil {
+		log.Printf("[ClientBot] sendMainMenu error: %v", err)
+	}
 }
 
 func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
@@ -482,12 +494,16 @@ func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
 	}
 
 	switch cb.Data {
+	case "cmd:menu":
+		app.sendMainMenu(chatID, fmt.Sprintf("🦅 <b>Главное меню Freedom Cry</b>\nАккаунт: <code>%s</code>", sess.AccountNumber))
 	case "cmd:qr":
 		app.sendConfigQR(chatID, sess)
 	case "cmd:sublink":
 		app.sendSubLink(chatID, sess)
 	case "cmd:singbox":
 		app.sendSingboxConfig(chatID, sess)
+	case "cmd:awg":
+		app.sendAmneziaConfig(chatID, sess)
 	case "cmd:proto":
 		app.sendProtocolInfo(chatID)
 	case "cmd:rotate":
@@ -501,31 +517,60 @@ func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
 
 func (app *ClientBotApp) sendConfigQR(chatID int64, sess *UserSession) {
 	subURL := fmt.Sprintf("%s/sub/%s", app.publicBase, sess.SubToken)
-	deeplink := fmt.Sprintf("freedomcry://connect?sub=%s&account=%s", subURL, sess.AccountNumber)
 
-	// Generate QR code strictly in RAM buffer
-	qrBytes, err := telegram.GenerateQRCodePNG(deeplink, 300)
+	// Fetch plain VLESS reality link from local API
+	vlessURL := fmt.Sprintf("%s/sub/%s/vless", app.apiBase, sess.SubToken)
+	vlessResp, err := app.httpClient.Get(vlessURL)
+	var vlessLink string
+	if err == nil && vlessResp.StatusCode == http.StatusOK {
+		defer vlessResp.Body.Close()
+		b, _ := io.ReadAll(vlessResp.Body)
+		vlessLink = strings.TrimSpace(string(b))
+	}
+
+	// For QR code: encode VLESS link so apps can directly import on scan
+	qrData := vlessLink
+	if qrData == "" {
+		qrData = subURL
+	}
+
+	qrBytes, err := telegram.GenerateQRCodePNG(qrData, 320)
 	if err != nil {
-		_, _ = app.bot.SendMessage(chatID, "Ошибка генерации QR-кода", nil)
+		log.Printf("[ClientBot] QR generation error: %v", err)
+		_, _ = app.bot.SendMessage(chatID, "❌ Ошибка генерации QR-кода", nil)
 		return
 	}
 
-	caption := fmt.Sprintf(`⚡ <b>Ваш персональный QR-код для подключения</b>
+	caption := fmt.Sprintf(`⚡ <b>Ваш VLESS-Reality ключ подключения:</b>
 
-Сканируйте в приложении <b>Freedom Cry Client</b>, <b>v2rayNG</b>, <b>NekoBox</b> или <b>Streisand</b>.
+<code>%s</code>
+<i>(Нажмите на ключ выше, чтобы скопировать в буфер)</i>
 
-🔗 Ссылка на подписку:
-<code>%s</code>`, subURL)
+📋 <b>Ссылка на автоподписку:</b>
+<code>%s</code>
+
+📱 <b>QR-код</b> выше содержит ключ подключения. Отсканируйте его в приложении (v2rayNG, Streisand, NekoBox, Sing-box).`, vlessLink, subURL)
 
 	keyboard := telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{
-				{Text: "🚀 Открыть в приложении", URL: deeplink},
+				{Text: "📋 Ссылка на подписку", CallbackData: "cmd:sublink"},
+				{Text: "📱 Sing-box JSON", CallbackData: "cmd:singbox"},
+			},
+			{
+				{Text: "🛡️ AmneziaWG (.conf)", CallbackData: "cmd:awg"},
+				{Text: "🔄 Ротация ключей", CallbackData: "cmd:rotate"},
+			},
+			{
+				{Text: "⬅️ Главное меню", CallbackData: "cmd:menu"},
 			},
 		},
 	}
 
-	_ = app.bot.SendPhotoBytes(chatID, "freedomcry_qr.png", qrBytes, caption, keyboard)
+	if err := app.bot.SendPhotoBytes(chatID, "freedomcry_qr.png", qrBytes, caption, keyboard); err != nil {
+		log.Printf("[ClientBot] SendPhotoBytes failed: %v. Fallback to SendMessage", err)
+		_, _ = app.bot.SendMessage(chatID, caption, keyboard)
+	}
 }
 
 func (app *ClientBotApp) sendSubLink(chatID int64, sess *UserSession) {
@@ -533,10 +578,30 @@ func (app *ClientBotApp) sendSubLink(chatID int64, sess *UserSession) {
 	text := fmt.Sprintf(`📋 <b>Ваша универсальная ссылка на подписку:</b>
 
 <code>%s</code>
+<i>(Нажмите на ссылку выше, чтобы скопировать)</i>
 
-Импортируйте её в любой клиент с поддержкой VLESS-Reality или AmneziaWG (v2rayNG, Sing-box, NekoBox, Streisand, Clash). Список серверов обновляется автоматически при блокировках.`, subURL)
+Импортируйте её в любой клиент: <b>v2rayNG</b>, <b>Sing-box</b>, <b>NekoBox</b>, <b>Streisand</b>, <b>Clash</b> или <b>Foxtray</b>.
+Список серверов обновляется автоматически при смене IP или блокировках.`, subURL)
 
-	_, _ = app.bot.SendMessage(chatID, text, nil)
+	keyboard := telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: "🌐 Открыть ссылку на подписку", URL: subURL},
+			},
+			{
+				{Text: "⚡ VLESS ключ / QR", CallbackData: "cmd:qr"},
+				{Text: "📱 Sing-box JSON", CallbackData: "cmd:singbox"},
+			},
+			{
+				{Text: "⬅️ Главное меню", CallbackData: "cmd:menu"},
+			},
+		},
+	}
+
+	_, err := app.bot.SendMessage(chatID, text, keyboard)
+	if err != nil {
+		log.Printf("[ClientBot] sendSubLink error: %v", err)
+	}
 }
 
 func (app *ClientBotApp) sendSingboxConfig(chatID int64, sess *UserSession) {
@@ -552,17 +617,93 @@ func (app *ClientBotApp) sendSingboxConfig(chatID int64, sess *UserSession) {
 📥 <b>Ссылка на конфиг:</b>
 <code>%s</code>
 
-<i>Скопируйте ссылку и добавьте как remote profile в Sing-box на телефоне или компьютере.</i>`, singboxURL)
+<i>Скопируйте ссылку и добавьте как Remote Profile в приложении Sing-box.</i>`, singboxURL)
 
 	keyboard := telegram.InlineKeyboardMarkup{
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{
-				{Text: "📥 Скачать конфиг", URL: singboxURL},
+				{Text: "🌐 Открыть ссылку на профиль", URL: singboxURL},
+			},
+			{
+				{Text: "⚡ VLESS ключ / QR", CallbackData: "cmd:qr"},
+				{Text: "🛡️ AmneziaWG (.conf)", CallbackData: "cmd:awg"},
+			},
+			{
+				{Text: "⬅️ Главное меню", CallbackData: "cmd:menu"},
 			},
 		},
 	}
 
-	_, _ = app.bot.SendMessage(chatID, text, keyboard)
+	_, err := app.bot.SendMessage(chatID, text, keyboard)
+	if err != nil {
+		log.Printf("[ClientBot] sendSingboxConfig error: %v", err)
+	}
+}
+
+func (app *ClientBotApp) sendAmneziaConfig(chatID int64, sess *UserSession) {
+	url := fmt.Sprintf("%s/sub/%s/info", app.apiBase, sess.SubToken)
+	resp, err := app.httpClient.Get(url)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		_, _ = app.bot.SendMessage(chatID, "❌ Не удалось получить конфигурацию AmneziaWG.", nil)
+		return
+	}
+	defer resp.Body.Close()
+
+	var info struct {
+		Nodes []struct {
+			NodeID     string `json:"node_id"`
+			NodeName   string `json:"node_name"`
+			AwgConfURL string `json:"awg_conf_url"`
+		} `json:"nodes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil || len(info.Nodes) == 0 {
+		_, _ = app.bot.SendMessage(chatID, "❌ Активные серверы с поддержкой AmneziaWG не найдены.", nil)
+		return
+	}
+
+	node := info.Nodes[0]
+	confResp, err := app.httpClient.Get(fmt.Sprintf("%s/sub/%s/awg/%s", app.apiBase, sess.SubToken, node.NodeID))
+	if err != nil || confResp.StatusCode != http.StatusOK {
+		_, _ = app.bot.SendMessage(chatID, "❌ Не удалось загрузить .conf файл с сервера.", nil)
+		return
+	}
+	defer confResp.Body.Close()
+	confBytes, _ := io.ReadAll(confResp.Body)
+	confText := strings.TrimSpace(string(confBytes))
+
+	publicConfURL := fmt.Sprintf("%s/sub/%s/awg/%s", app.publicBase, sess.SubToken, node.NodeID)
+
+	text := fmt.Sprintf(`🛡️ <b>Конфигурация AmneziaWG (%s):</b>
+
+<code>%s</code>
+<i>(Нажмите на конфигурацию выше, чтобы скопировать)</i>
+
+📥 <b>Ссылка для скачивания файла:</b>
+<code>%s</code>
+
+📲 <b>Как подключить:</b>
+1. Установите <b>AmneziaWG</b> или <b>AmneziaVPN</b>.
+2. Создайте файл <code>freedomcry.conf</code> или вставьте текст через буфер обмена.`, node.NodeName, confText, publicConfURL)
+
+	keyboard := telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: "🌐 Скачать .conf файл", URL: publicConfURL},
+			},
+			{
+				{Text: "⚡ VLESS ключ / QR", CallbackData: "cmd:qr"},
+				{Text: "📱 Sing-box JSON", CallbackData: "cmd:singbox"},
+			},
+			{
+				{Text: "⬅️ Главное меню", CallbackData: "cmd:menu"},
+			},
+		},
+	}
+
+	_, err = app.bot.SendMessage(chatID, text, keyboard)
+	if err != nil {
+		log.Printf("[ClientBot] sendAmneziaConfig error: %v", err)
+	}
 }
 
 func (app *ClientBotApp) sendProtocolInfo(chatID int64) {
