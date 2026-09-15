@@ -135,7 +135,7 @@ func (app *AdminBotApp) handleMessage(msg *telegram.Message) {
 
 	// Strict Whitelist check: user must be in whitelist before executing any command or /auth (FC-NEW-07)
 	if len(app.adminWhitelist) == 0 || !app.adminWhitelist[chatID] {
-		_, _ = app.bot.SendMessage(chatID, "⛔ <b>Доступ запрещен.</b> Ваш Telegram ID не находится в белом списке администраторов.", nil)
+		_, _ = app.bot.SendMessage(chatID, fmt.Sprintf("⛔ <b>Доступ запрещен.</b> Ваш Telegram ID (<code>%d</code>) не находится в белом списке администраторов.", chatID), nil)
 		return
 	}
 
