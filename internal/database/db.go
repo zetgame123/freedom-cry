@@ -60,6 +60,8 @@ func Connect(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 	// from database tables so that secrets are erased at the schema level.
 	_ = db.Exec("ALTER TABLE server_nodes DROP COLUMN IF EXISTS reality_priv_key, DROP COLUMN IF EXISTS awg_priv_key").Error
 	_ = db.Exec("ALTER TABLE client_keys DROP COLUMN IF EXISTS awg_private_key").Error
+	// Partial index for email: allow multiple anonymous users with empty/NULL email while enforcing uniqueness for registered emails
+	_ = db.Exec("DROP INDEX IF EXISTS idx_users_email; CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL AND email != '';").Error
 	// Subnet Routing Hardening: Update any legacy /24 subnets to /16 dual-stack
 	_ = db.Model(&models.ServerNode{}).Where("awg_server_subnet = ? OR awg_server_subnet = ?", "10.8.0.0/24", "10.8.0.1/24").Update("awg_server_subnet", "10.8.0.1/16, fd00:8::1/64").Error
 
