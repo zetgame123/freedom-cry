@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type InviteService struct {
@@ -36,79 +37,100 @@ type InviteRegisterResponse struct {
 	ExpiresAt         time.Time `json:"expires_at"`
 }
 
-// RegisterWithInvite validates the invite code, provisions a new anonymous user account,
-// and activates a real subscription with cryptographic keys for all available server nodes.
+// RegisterWithInvite validates the invite code with row-level locking (FC-SEC-05),
+// provisions a new anonymous user account, and activates a real subscription.
 func (s *InviteService) RegisterWithInvite(rawCode string) (*InviteRegisterResponse, error) {
 	code := strings.TrimSpace(rawCode)
 	if code == "" {
 		return nil, errors.New("invite code is required")
 	}
 
-	var matchedInvite *models.InviteCode
-	isMaster := false
+	var resp *InviteRegisterResponse
 
-	// 1. Check master invite code
-	if s.cfg.App.MasterInviteCode != "" && strings.EqualFold(code, s.cfg.App.MasterInviteCode) {
-		isMaster = true
-	}
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var matchedInvite *models.InviteCode
+		isMaster := false
 
-	// 2. If not master, look up in database
-	if !isMaster {
-		var invite models.InviteCode
-		err := s.db.Where("LOWER(code) = LOWER(?) AND is_active = ?", code, true).First(&invite).Error
+		// 1. Check master invite code
+		if s.cfg.App.MasterInviteCode != "" && strings.EqualFold(code, s.cfg.App.MasterInviteCode) {
+			isMaster = true
+		}
+
+		// 2. If not master, look up in database with row-level locking
+		if !isMaster {
+			var invite models.InviteCode
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("LOWER(code) = LOWER(?) AND is_active = ?", code, true).
+				First(&invite).Error
+			if err != nil {
+				return errors.New("invalid or expired invite code")
+			}
+
+			if invite.MaxUses > 0 && invite.UsesCount >= invite.MaxUses {
+				tx.Model(&invite).Update("is_active", false)
+				return errors.New("invite code has reached its usage limit")
+			}
+
+			matchedInvite = &invite
+		}
+
+		// 3. Create anonymous user account (Zero-Knowledge 16-digit account number)
+		authResp, err := s.userServ.CreateAnonymousAccount()
 		if err != nil {
-			return nil, errors.New("invalid or expired invite code")
+			return err
 		}
 
-		if invite.MaxUses > 0 && invite.UsesCount >= invite.MaxUses {
-			s.db.Model(&invite).Update("is_active", false)
-			return nil, errors.New("invite code has reached its usage limit")
-		}
-
-		matchedInvite = &invite
-	}
-
-	// 3. Create anonymous user account (Zero-Knowledge 16-digit account number)
-	authResp, err := s.userServ.CreateAnonymousAccount()
-	if err != nil {
-		return nil, err
-	}
-
-	// 4. Select subscription plan
-	var plan models.Plan
-	if matchedInvite != nil && matchedInvite.PlanID != nil {
-		if err := s.db.First(&plan, "id = ?", *matchedInvite.PlanID).Error; err != nil {
-			if err := s.db.Where("is_active = ?", true).Order("duration_days asc").First(&plan).Error; err != nil {
-				return nil, errors.New("no active plans available")
+		// 4. Select subscription plan
+		var plan models.Plan
+		if matchedInvite != nil && matchedInvite.PlanID != nil {
+			if err := tx.First(&plan, "id = ?", *matchedInvite.PlanID).Error; err != nil {
+				if err := tx.Where("is_active = ?", true).Order("duration_days asc").First(&plan).Error; err != nil {
+					return errors.New("no active plans available")
+				}
+			}
+		} else {
+			if err := tx.Where("is_active = ?", true).Order("duration_days asc").First(&plan).Error; err != nil {
+				return errors.New("no active plans available")
 			}
 		}
-	} else {
-		if err := s.db.Where("is_active = ?", true).Order("duration_days asc").First(&plan).Error; err != nil {
-			return nil, errors.New("no active plans available")
-		}
-	}
 
-	// 5. Create real subscription and provision client keys for all active nodes
-	sub, err := s.subServ.CreateSubscription(authResp.User.ID, plan.ID)
+		// 5. Create real subscription and provision client keys for all active nodes
+		sub, err := s.subServ.CreateSubscription(authResp.User.ID, plan.ID)
+		if err != nil {
+			return err
+		}
+
+		// 6. Atomically increment usage count for DB invites
+		if matchedInvite != nil {
+			newUses := matchedInvite.UsesCount + 1
+			isActive := true
+			if matchedInvite.MaxUses > 0 && newUses >= matchedInvite.MaxUses {
+				isActive = false
+			}
+
+			if err := tx.Model(matchedInvite).Updates(map[string]interface{}{
+				"uses_count": newUses,
+				"is_active":  isActive,
+			}).Error; err != nil {
+				return err
+			}
+		}
+
+		resp = &InviteRegisterResponse{
+			AccountNumber:     authResp.User.AccountNumber,
+			Token:             authResp.Token,
+			SubscriptionToken: sub.Token,
+			PlanName:          plan.Name,
+			ExpiresAt:         sub.ExpiresAt,
+		}
+		return nil
+	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	// 6. Increment usage count for DB invites
-	if matchedInvite != nil {
-		s.db.Model(matchedInvite).Updates(map[string]interface{}{
-			"uses_count": gorm.Expr("uses_count + 1"),
-			"is_active":  gorm.Expr("CASE WHEN max_uses > 0 AND uses_count + 1 >= max_uses THEN false ELSE true END"),
-		})
-	}
-
-	return &InviteRegisterResponse{
-		AccountNumber:     authResp.User.AccountNumber,
-		Token:             authResp.Token,
-		SubscriptionToken: sub.Token,
-		PlanName:          plan.Name,
-		ExpiresAt:         sub.ExpiresAt,
-	}, nil
+	return resp, nil
 }
 
 // ValidateInvite checks if a given invite code is currently valid without consuming it.

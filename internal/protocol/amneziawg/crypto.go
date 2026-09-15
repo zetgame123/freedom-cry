@@ -16,6 +16,7 @@ import (
 const (
 	privKeyTokenSalt = "freedom-cry-awg-token-salt-v1"
 	privKeyHKDFInfo  = "freedom-cry-client-privkey-encryption"
+	pskHKDFInfo      = "freedom-cry-client-psk-encryption"
 )
 
 // EncryptClientPrivateKey encrypts the WireGuard client private key using AES-256-GCM
@@ -93,3 +94,83 @@ func DecryptClientPrivateKey(token string, encPrivKeyBase64 string) (string, err
 
 	return string(plaintext), nil
 }
+
+// EncryptClientPSK encrypts the WireGuard client preshared key (PSK) using AES-256-GCM
+// with a key derived from the user's secret subscription token via HKDF-SHA256.
+func EncryptClientPSK(token string, plainPSK string) (string, error) {
+	if token == "" || plainPSK == "" {
+		return "", errors.New("token and PSK must not be empty")
+	}
+
+	hkdfReader := hkdf.New(sha256.New, []byte(token), []byte(privKeyTokenSalt), []byte(pskHKDFInfo))
+	aesKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfReader, aesKey); err != nil {
+		return "", fmt.Errorf("failed to derive PSK encryption key: %w", err)
+	}
+
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	ciphertext := gcm.Seal(nonce, nonce, []byte(plainPSK), nil)
+	return base64.StdEncoding.EncodeToString(ciphertext), nil
+}
+
+// DecryptClientPSK decrypts the WireGuard client preshared key using AES-256-GCM.
+// Falls back gracefully if PSK is unencrypted (for backward compatibility).
+func DecryptClientPSK(token string, encPSKBase64 string) (string, error) {
+	if token == "" || encPSKBase64 == "" {
+		return "", errors.New("token and encrypted PSK must not be empty")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(encPSKBase64)
+	if err != nil {
+		return encPSKBase64, nil
+	}
+
+	hkdfReader := hkdf.New(sha256.New, []byte(token), []byte(privKeyTokenSalt), []byte(pskHKDFInfo))
+	aesKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfReader, aesKey); err != nil {
+		return "", fmt.Errorf("failed to derive PSK decryption key: %w", err)
+	}
+
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("failed to create GCM: %w", err)
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(data) < nonceSize {
+		// Possibly legacy unencrypted PSK
+		return encPSKBase64, nil
+	}
+
+	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		// If decryption fails, and it has valid 32-byte WireGuard PSK length, return legacy plaintext
+		if len(data) == 32 {
+			return encPSKBase64, nil
+		}
+		return "", fmt.Errorf("failed to decrypt client preshared key: %w", err)
+	}
+
+	return string(plaintext), nil
+}
+

@@ -25,9 +25,8 @@ func NewUserService(db *gorm.DB, cfg *config.Config) *UserService {
 }
 
 type RegisterDTO struct {
-	Email      string `json:"email" binding:"required,email"`
-	Password   string `json:"password" binding:"required,min=6"`
-	TelegramID *int64 `json:"telegram_id"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=6"`
 }
 
 type LoginDTO struct {
@@ -55,7 +54,6 @@ func (s *UserService) Register(dto RegisterDTO) (*AuthResponse, error) {
 	user := models.User{
 		Email:        dto.Email,
 		PasswordHash: string(hashed),
-		TelegramID:   dto.TelegramID,
 		Role:         models.RoleUser,
 		Balance:      0.00,
 		IsActive:     true,

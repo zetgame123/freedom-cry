@@ -16,10 +16,10 @@ redis:
   db: 0
 
 jwt:
-  secret: "freedom-cry-super-secure-jwt-secret-change-in-prod"
+  secret: "" # REQUIRED: Set via JWT_SECRET environment variable
   expiry: 72h
 
 app:
   base_url: "http://localhost:8080"
-  node_secret: "fc-node-secret-token-key-2026"
+  node_secret: "" # Set via NODE_SECRET
   default_dns: "1.1.1.1, 8.8.8.8"

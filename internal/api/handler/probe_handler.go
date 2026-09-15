@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"time"
 
@@ -25,9 +26,6 @@ func NewProbeHandler(
 	autoHealingServ *service.AutoHealingService,
 	secret string,
 ) *ProbeHandler {
-	if secret == "" {
-		secret = "fc-probe-shared-secret-2026"
-	}
 	return &ProbeHandler{
 		db:              db,
 		nodeServ:        nodeServ,
@@ -37,8 +35,12 @@ func NewProbeHandler(
 }
 
 func (h *ProbeHandler) verifySecret(c *gin.Context) bool {
+	if h.secret == "" {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "probe sensor system not configured"})
+		return false
+	}
 	provided := c.GetHeader("X-Probe-Secret")
-	if provided == "" || provided != h.secret {
+	if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(h.secret)) != 1 {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized probe access"})
 		return false
 	}

@@ -31,13 +31,14 @@ type ClientKey struct {
 	AwgAddress         string `gorm:"type:varchar(100);uniqueIndex:idx_node_awg_addr,priority:2" json:"awg_address,omitempty"` // e.g. 10.8.0.2/32, fd00:8::2/128
 	AwgPublicKey       string `gorm:"type:varchar(100)" json:"awg_public_key,omitempty"`                                       // client's public key (stored on server)
 	AwgPrivateKeyEnc   string `gorm:"type:text" json:"-"`                                                                     // AES-256-GCM encrypted using sub.Token
-	AwgPresharedKey    string `gorm:"type:varchar(100)" json:"-"`
+	AwgPresharedKey    string `gorm:"type:text" json:"-"`                                                                     // AES-256-GCM encrypted using sub.Token
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 
-	Node ServerNode `gorm:"foreignKey:NodeID" json:"node,omitempty"`
+	Node         ServerNode   `gorm:"foreignKey:NodeID" json:"node,omitempty"`
+	Subscription Subscription `gorm:"foreignKey:SubscriptionID" json:"subscription,omitempty"`
 }
 
 func (k *ClientKey) BeforeCreate(tx *gorm.DB) error {

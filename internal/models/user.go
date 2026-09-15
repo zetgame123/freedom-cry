@@ -21,7 +21,6 @@ type User struct {
 	AccountNumber string         `gorm:"type:varchar(32);uniqueIndex;not null" json:"account_number"` // Mullvad-style: 1234-5678-9012-3456
 	Email         string         `gorm:"index" json:"email,omitempty"`
 	PasswordHash  string         `json:"-"`
-	TelegramID    *int64         `gorm:"uniqueIndex" json:"telegram_id,omitempty"`
 	Balance       float64        `gorm:"type:decimal(12,2);default:0.00" json:"balance"`
 	Role          UserRole       `gorm:"type:varchar(20);default:'user'" json:"role"`
 	IsActive      bool           `gorm:"default:true" json:"is_active"`

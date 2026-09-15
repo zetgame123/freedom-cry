@@ -72,15 +72,15 @@ func Load(path string) (*Config, error) {
 			DB:       0,
 		},
 		JWT: JWTConfig{
-			Secret: "freedom-cry-super-secure-jwt-secret-change-in-prod",
+			Secret: "",
 			Expiry: 72 * time.Hour,
 		},
 		App: AppConfig{
 			BaseURL:          "http://localhost:8080",
-			NodeSecret:       "fc-node-secret-token-key-2026",
+			NodeSecret:       "",
 			DefaultDNS:       "1.1.1.1, 8.8.8.8",
-			AdminSecret:      "fc-admin-secret-2026",
-			MasterInviteCode: "FC-FREEDOM-2026",
+			AdminSecret:      "",
+			MasterInviteCode: "",
 		},
 	}
 
@@ -150,14 +150,16 @@ func Load(path string) (*Config, error) {
 		cfg.App.MasterInviteCode = val
 	}
 
-	// Security Hardening: Never allow insecure default JWT secret in release mode
-	if cfg.JWT.Secret == "freedom-cry-super-secure-jwt-secret-change-in-prod" || cfg.JWT.Secret == "" {
+	// Security Hardening: Never allow insecure default or empty JWT secret in release mode
+	if cfg.JWT.Secret == "" || cfg.JWT.Secret == "freedom-cry-super-secure-jwt-secret-change-in-prod" {
 		if cfg.Server.Mode == "release" {
 			rnd := make([]byte, 32)
 			if _, err := rand.Read(rnd); err == nil {
 				cfg.JWT.Secret = hex.EncodeToString(rnd)
-				log.Println("[Security] Insecure default JWT_SECRET detected in release mode. Generated ephemeral high-entropy random key.")
+				log.Println("[Security] Insecure default or empty JWT_SECRET detected in release mode. Generated ephemeral high-entropy random key.")
 			}
+		} else {
+			cfg.JWT.Secret = "freedom-cry-dev-jwt-secret-do-not-use-in-prod"
 		}
 	}
 

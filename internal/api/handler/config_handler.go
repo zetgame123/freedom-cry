@@ -173,11 +173,18 @@ func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 		return
 	}
 
-	// Zero Knowledge at Rest: Decrypt client private key using the secret bearer token
+	// Zero Knowledge at Rest: Decrypt client private key and PSK using the secret bearer token
 	clientPrivKey := "<INSERT_YOUR_LOCAL_CLIENT_PRIVATE_KEY_HERE>"
 	if targetKey.AwgPrivateKeyEnc != "" {
 		if decrypted, err := amneziawg.DecryptClientPrivateKey(token, targetKey.AwgPrivateKeyEnc); err == nil && decrypted != "" {
 			clientPrivKey = decrypted
+		}
+	}
+
+	clientPSK := targetKey.AwgPresharedKey
+	if targetKey.AwgPresharedKey != "" {
+		if decrypted, err := amneziawg.DecryptClientPSK(token, targetKey.AwgPresharedKey); err == nil && decrypted != "" {
+			clientPSK = decrypted
 		}
 	}
 
@@ -195,7 +202,7 @@ func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 		H3:               targetKey.Node.AwgH3,
 		H4:               targetKey.Node.AwgH4,
 		ServerPublicKey:  targetKey.Node.AwgPubKey,
-		PresharedKey:     targetKey.AwgPresharedKey,
+		PresharedKey:     clientPSK,
 		Endpoint:         fmt.Sprintf("%s:%d", targetKey.Node.Host, targetKey.Node.AwgPort),
 		AllowedIPs:       "0.0.0.0/0, ::/0",
 	}

@@ -40,3 +40,33 @@ func TestClientPrivateKeyEncryptDecrypt(t *testing.T) {
 		t.Fatalf("expected error when decrypting tampered ciphertext, got nil")
 	}
 }
+
+func TestClientPSKEncryptDecrypt(t *testing.T) {
+	token := "4f2a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a"
+	plainPSK := "wAnz5TF+lXXJ7iZq8e9zT4Q8K5u4jY+H6mN8pQ1rTs="
+
+	encrypted, err := EncryptClientPSK(token, plainPSK)
+	if err != nil {
+		t.Fatalf("PSK encryption failed: %v", err)
+	}
+
+	if encrypted == plainPSK {
+		t.Fatalf("ciphertext must not match plaintext")
+	}
+
+	decrypted, err := DecryptClientPSK(token, encrypted)
+	if err != nil {
+		t.Fatalf("PSK decryption failed: %v", err)
+	}
+
+	if decrypted != plainPSK {
+		t.Fatalf("expected decrypted PSK %q, got %q", plainPSK, decrypted)
+	}
+
+	// Legacy plaintext fallback
+	legacyFallback, err := DecryptClientPSK(token, plainPSK)
+	if err != nil || legacyFallback != plainPSK {
+		t.Fatalf("expected legacy fallback %q, got %q (err: %v)", plainPSK, legacyFallback, err)
+	}
+}
+

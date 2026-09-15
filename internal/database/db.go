@@ -60,6 +60,9 @@ func Connect(cfg *config.DatabaseConfig) (*gorm.DB, error) {
 	// from database tables so that secrets are erased at the schema level.
 	_ = db.Exec("ALTER TABLE server_nodes DROP COLUMN IF EXISTS reality_priv_key, DROP COLUMN IF EXISTS awg_priv_key").Error
 	_ = db.Exec("ALTER TABLE client_keys DROP COLUMN IF EXISTS awg_private_key").Error
+	_ = db.Exec("ALTER TABLE client_keys ALTER COLUMN awg_preshared_key TYPE text").Error
+	// Zero-Knowledge Privacy Hardening: Drop telegram_id from users table
+	_ = db.Exec("ALTER TABLE users DROP COLUMN IF EXISTS telegram_id").Error
 	// Partial index for email: allow multiple anonymous users with empty/NULL email while enforcing uniqueness for registered emails
 	_ = db.Exec("DROP INDEX IF EXISTS idx_users_email; CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL AND email != '';").Error
 	// Subnet Routing Hardening: Update any legacy /24 subnets to /16 dual-stack
@@ -203,17 +206,23 @@ func SeedDefaults(db *gorm.DB) {
 	if inviteCount == 0 {
 		masterCode := os.Getenv("MASTER_INVITE_CODE")
 		if masterCode == "" {
-			masterCode = "FC-FREEDOM-2026"
+			var err error
+			masterCode, err = models.GenerateInviteCode("FC-INIT")
+			if err != nil {
+				masterCode = ""
+			}
 		}
-		defaultInvite := models.InviteCode{
-			Code:        masterCode,
-			Description: "Master Initial Invite (Unlimited)",
-			MaxUses:     0, // unlimited
-			UsesCount:   0,
-			IsActive:    true,
-		}
-		if err := db.Create(&defaultInvite).Error; err == nil {
-			log.Printf("[Seed] Master Invite Code created: %s", masterCode)
+		if masterCode != "" {
+			defaultInvite := models.InviteCode{
+				Code:        masterCode,
+				Description: "Master Initial Invite (Unlimited)",
+				MaxUses:     0, // unlimited
+				UsesCount:   0,
+				IsActive:    true,
+			}
+			if err := db.Create(&defaultInvite).Error; err == nil {
+				log.Printf("[Security] Initial Master Invite Code created: %s", masterCode)
+			}
 		}
 	}
 }

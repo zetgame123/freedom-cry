@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"freedom-cry/internal/api/handler"
@@ -48,16 +49,16 @@ func SetupRouter(
 		c.Next()
 	})
 
-	// CORS Middleware (Strict standards-compliant headers)
+	// CORS Middleware (Strict standards-compliant headers with allowlist verification, FC-SEC-01)
 	r.Use(func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 		if origin != "" {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		} else {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+			if isAllowedOrigin(origin, cfg) {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+				c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+			c.Writer.Header().Set("Vary", "Origin")
 		}
-		c.Writer.Header().Set("Vary", "Origin")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Node-ID, X-Node-Token, X-Node-Timestamp, X-Node-Signature, X-Probe-Secret")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
 
@@ -85,8 +86,10 @@ func SetupRouter(
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "Freedom Cry VPN API"})
 	})
 
-	// Public Subscription Endpoints (Protected by 256-bit secret token)
+	// Public Subscription Endpoints (Protected by 256-bit secret token & rate-limiting: 60 req/min per IP)
+	subLimiter := middleware.NewRateLimiter(60, time.Minute)
 	subGroup := r.Group("/sub")
+	subGroup.Use(subLimiter.Middleware())
 	{
 		subGroup.GET("/:token", configH.GetSubscription)
 		subGroup.GET("/:token/vless", configH.GetRawVless)
@@ -132,9 +135,10 @@ func SetupRouter(
 		// Phase 2: Multi-Hop Available Chains
 		v1.GET("/routes/chains", routeH.ListChains)
 
-		// Phase 4: Fleet Sensor Probing Endpoints
-		v1.GET("/node/probe-targets", probeH.GetProbeTargets)
-		v1.POST("/node/probe-report", probeH.SubmitProbeReport)
+		// Phase 4: Fleet Sensor Probing Endpoints (Protected by rate-limiting & shared secret)
+		probeLimiter := middleware.NewRateLimiter(30, time.Minute)
+		v1.GET("/node/probe-targets", probeLimiter.Middleware(), probeH.GetProbeTargets)
+		v1.POST("/node/probe-report", probeLimiter.Middleware(), probeH.SubmitProbeReport)
 
 		// Node Agent Sync endpoints (Protected by cryptographic per-node identity verification)
 		nodeAgentGroup := v1.Group("/node")
@@ -177,4 +181,20 @@ func SetupRouter(
 	}
 
 	return r
+}
+
+func isAllowedOrigin(origin string, cfg *config.Config) bool {
+	if origin == "" {
+		return false
+	}
+	if cfg.App.BaseURL != "" && strings.HasPrefix(origin, cfg.App.BaseURL) {
+		return true
+	}
+	// In debug mode, allow localhost for development
+	if cfg.Server.Mode != "release" {
+		if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") {
+			return true
+		}
+	}
+	return false
 }

@@ -1,6 +1,9 @@
 # Binaries
 /server
 /agent
+/client
+/bot-client
+/bot-admin
 /covert
 *.exe
 *.dll

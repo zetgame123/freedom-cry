@@ -6,6 +6,7 @@ import (
 
 	"freedom-cry/internal/api/middleware"
 	"freedom-cry/internal/models"
+	"freedom-cry/internal/protocol/amneziawg"
 	"freedom-cry/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -134,6 +135,7 @@ func (h *NodeHandler) NodeSync(c *gin.Context) {
 	var keys []models.ClientKey
 	now := time.Now()
 	err := h.db.
+		Preload("Subscription").
 		Joins("JOIN subscriptions ON subscriptions.id = client_keys.subscription_id").
 		Where("client_keys.node_id = ? AND subscriptions.status = ? AND subscriptions.expires_at > ?",
 			targetNodeID, models.SubActive, now).
@@ -162,9 +164,15 @@ func (h *NodeHandler) NodeSync(c *gin.Context) {
 			})
 		}
 		if k.AwgPublicKey != "" && k.AwgAddress != "" {
+			peerPSK := k.AwgPresharedKey
+			if k.AwgPresharedKey != "" && k.Subscription.Token != "" {
+				if decrypted, err := amneziawg.DecryptClientPSK(k.Subscription.Token, k.AwgPresharedKey); err == nil && decrypted != "" {
+					peerPSK = decrypted
+				}
+			}
 			awgPeers = append(awgPeers, AwgPeerSync{
 				PublicKey:    k.AwgPublicKey,
-				PresharedKey: k.AwgPresharedKey,
+				PresharedKey: peerPSK,
 				AllowedIPs:   k.AwgAddress,
 			})
 		}

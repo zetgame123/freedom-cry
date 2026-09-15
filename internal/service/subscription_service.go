@@ -102,6 +102,8 @@ func (s *SubscriptionService) CreateSubscription(userID, planID uuid.UUID) (*mod
 				return err
 			}
 
+			encPsk, _ := amneziawg.EncryptClientPSK(sub.Token, awgKP.PresharedKey)
+
 			clientKey := models.ClientKey{
 				SubscriptionID:   sub.ID,
 				NodeID:           node.ID,
@@ -110,7 +112,7 @@ func (s *SubscriptionService) CreateSubscription(userID, planID uuid.UUID) (*mod
 				AwgAddress:       clientAddress,
 				AwgPublicKey:     awgKP.PublicKey,
 				AwgPrivateKeyEnc: encPrivKey,
-				AwgPresharedKey:  awgKP.PresharedKey,
+				AwgPresharedKey:  encPsk,
 			}
 
 			if err := tx.Create(&clientKey).Error; err != nil {
@@ -178,7 +180,7 @@ func (s *SubscriptionService) RotateSubscriptionToken(userID uuid.UUID, subID uu
 		}
 		newToken := hex.EncodeToString(newTokenBytes)
 
-		// Re-encrypt client private keys with the new token
+		// Re-encrypt client private keys and preshared keys with the new token
 		for i := range sub.ClientKeys {
 			k := &sub.ClientKeys[i]
 			if k.AwgPrivateKeyEnc != "" {
@@ -188,6 +190,18 @@ func (s *SubscriptionService) RotateSubscriptionToken(userID uuid.UUID, subID uu
 					if err == nil {
 						k.AwgPrivateKeyEnc = newEnc
 						if err := tx.Model(k).Update("awg_private_key_enc", newEnc).Error; err != nil {
+							return err
+						}
+					}
+				}
+			}
+			if k.AwgPresharedKey != "" {
+				plainPSK, err := amneziawg.DecryptClientPSK(oldToken, k.AwgPresharedKey)
+				if err == nil {
+					newPskEnc, err := amneziawg.EncryptClientPSK(newToken, plainPSK)
+					if err == nil {
+						k.AwgPresharedKey = newPskEnc
+						if err := tx.Model(k).Update("awg_preshared_key", newPskEnc).Error; err != nil {
 							return err
 						}
 					}
@@ -345,7 +359,7 @@ func (s *SubscriptionService) GenerateSingBoxUniversalConfig(sub *models.Subscri
 				"tls": map[string]interface{}{
 					"enabled":     true,
 					"server_name": k.Node.RealityServerName,
-					"insecure":    true,
+					"insecure":    false,
 				},
 			}
 			nodeOutbounds = append(nodeOutbounds, hy2Outbound)

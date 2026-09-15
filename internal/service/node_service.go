@@ -144,25 +144,36 @@ func (s *NodeService) RecordHeartbeat(nodeID uuid.UUID, loadPercent int) error {
 }
 
 func (s *NodeService) RegisterNodeKeys(nodeID uuid.UUID, realityPubKey, realityShortID, awgPubKey, nodeIdentityPubKey string) error {
-	updates := map[string]interface{}{}
-	if realityPubKey != "" {
-		updates["reality_pub_key"] = realityPubKey
-	}
-	if realityShortID != "" {
-		updates["reality_short_id"] = realityShortID
-	}
-	if awgPubKey != "" {
-		updates["awg_pub_key"] = awgPubKey
-	}
-	if nodeIdentityPubKey != "" {
-		updates["public_key"] = nodeIdentityPubKey
-	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var node models.ServerNode
+		if err := tx.Where("id = ? AND is_revoked = ?", nodeID, false).First(&node).Error; err != nil {
+			return errors.New("node not found or revoked")
+		}
 
-	if len(updates) == 0 {
-		return nil
-	}
+		updates := map[string]interface{}{}
+		if realityPubKey != "" {
+			updates["reality_pub_key"] = realityPubKey
+		}
+		if realityShortID != "" {
+			updates["reality_short_id"] = realityShortID
+		}
+		if awgPubKey != "" {
+			updates["awg_pub_key"] = awgPubKey
+		}
+		if nodeIdentityPubKey != "" {
+			// Prevent Ed25519 identity key overwrite (FC-SEC-09)
+			if node.PublicKey != "" && node.PublicKey != nodeIdentityPubKey {
+				return errors.New("node Ed25519 identity key already registered; rotation requires administrative action")
+			}
+			updates["public_key"] = nodeIdentityPubKey
+		}
 
-	return s.db.Model(&models.ServerNode{}).Where("id = ? AND is_revoked = ?", nodeID, false).Updates(updates).Error
+		if len(updates) == 0 {
+			return nil
+		}
+
+		return tx.Model(&node).Updates(updates).Error
+	})
 }
 
 func (s *NodeService) RevokeNode(nodeID uuid.UUID) error {
