@@ -76,7 +76,11 @@ services:
       BASE_URL: "${BASE_URL:?BASE_URL must be set (e.g. https://vpn.freedomcry.net)}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be provided with high entropy}"
       ADMIN_INITIAL_PASSWORD: "${ADMIN_INITIAL_PASSWORD:-}"
+      ADMIN_MFA_SECRET: "${ADMIN_MFA_SECRET:-fc-admin-secret-2026}"
+      MASTER_INVITE_CODE: "${MASTER_INVITE_CODE:-FC-FREEDOM-2026}"
       PROBE_SECRET: "${PROBE_SECRET:-}"
+    ports:
+      - "0.0.0.0:8080:8080"
     networks:
       - freedomcry-internal
     logging:
