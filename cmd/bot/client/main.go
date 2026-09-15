@@ -20,6 +20,7 @@ import (
 type ClientBotApp struct {
 	bot        *telegram.Bot
 	apiBase    string
+	publicBase string
 	httpClient *http.Client
 	mu         sync.RWMutex
 	// Ephemeral session cache: chatID -> AccountNumber & Token
@@ -35,7 +36,8 @@ type UserSession struct {
 
 func main() {
 	token := flag.String("token", os.Getenv("TELEGRAM_BOT_TOKEN"), "Telegram Bot API Token")
-	apiURL := flag.String("api", os.Getenv("API_BASE_URL"), "Freedom Cry API Base URL")
+	apiURL := flag.String("api", os.Getenv("API_BASE_URL"), "Freedom Cry API Base URL (internal)")
+	publicURL := flag.String("public-url", os.Getenv("PUBLIC_BASE_URL"), "Freedom Cry Public Base URL (for client configs)")
 	flag.Parse()
 
 	if *token == "" {
@@ -45,15 +47,19 @@ func main() {
 	if *apiURL == "" {
 		*apiURL = "http://127.0.0.1:8080"
 	}
+	if *publicURL == "" {
+		*publicURL = *apiURL
+	}
 
 	log.Println("==================================================")
 	log.Println("    🤖 Freedom Cry Client Telegram Bot Started    ")
 	log.Println("==================================================")
-	log.Printf("Target API: %s", *apiURL)
+	log.Printf("Target API: %s | Public URL: %s", *apiURL, *publicURL)
 
 	app := &ClientBotApp{
 		bot:        telegram.NewBot(*token),
 		apiBase:    *apiURL,
+		publicBase: *publicURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		sessions:   make(map[int64]*UserSession),
 	}
@@ -182,7 +188,7 @@ func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
 }
 
 func (app *ClientBotApp) sendConfigQR(chatID int64, sess *UserSession) {
-	subURL := fmt.Sprintf("%s/sub/%s", app.apiBase, sess.SubToken)
+	subURL := fmt.Sprintf("%s/sub/%s", app.publicBase, sess.SubToken)
 	deeplink := fmt.Sprintf("freedomcry://connect?sub=%s&account=%s", subURL, sess.AccountNumber)
 
 	// Generate QR code strictly in RAM buffer
@@ -210,7 +216,7 @@ func (app *ClientBotApp) sendConfigQR(chatID int64, sess *UserSession) {
 }
 
 func (app *ClientBotApp) sendSubLink(chatID int64, sess *UserSession) {
-	subURL := fmt.Sprintf("%s/sub/%s", app.apiBase, sess.SubToken)
+	subURL := fmt.Sprintf("%s/sub/%s", app.publicBase, sess.SubToken)
 	text := fmt.Sprintf(`📋 <b>Ваша универсальная ссылка на подписку:</b>
 
 <code>%s</code>
@@ -221,7 +227,7 @@ func (app *ClientBotApp) sendSubLink(chatID int64, sess *UserSession) {
 }
 
 func (app *ClientBotApp) sendSingboxConfig(chatID int64, sess *UserSession) {
-	singboxURL := fmt.Sprintf("%s/sub/%s/singbox", app.apiBase, sess.SubToken)
+	singboxURL := fmt.Sprintf("%s/sub/%s/singbox", app.publicBase, sess.SubToken)
 	text := fmt.Sprintf(`📱 <b>Конфигурация Sing-box (Universal JSON Profile)</b>
 
 Продвинутый профиль со всеми протоколами:
