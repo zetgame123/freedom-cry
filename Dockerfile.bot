@@ -1,0 +1,24 @@
+FROM golang:alpine AS builder
+
+ARG BOT_TYPE=client
+
+WORKDIR /app
+
+RUN apk add --no-cache git ca-certificates
+
+ENV GOPROXY="https://proxy.golang.org,https://goproxy.io,direct"
+
+COPY go.mod go.sum ./
+RUN go mod download || (sleep 2 && go mod download)
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /app/bot ./cmd/bot/${BOT_TYPE}
+
+FROM alpine:3.20
+
+WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=builder /app/bot /app/bot
+
+ENTRYPOINT ["/app/bot"]

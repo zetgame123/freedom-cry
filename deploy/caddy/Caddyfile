@@ -1,0 +1,38 @@
+{
+    # Global options
+    auto_https disable_redirects
+    admin off
+}
+
+# Domain configured via environment variable DOMAIN (e.g. vpn.freedomcry.net)
+{$DOMAIN:localhost} {
+    # Logging
+    log {
+        output stdout
+        format json
+    }
+
+    # Security headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "interest-cohort=()"
+        -Server
+    }
+
+    # Reverse proxy to Freedom Cry API container
+    reverse_proxy api:8080 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+
+        # Timeouts and buffer tuning
+        transport http {
+            keepalive 30s
+            response_header_timeout 15s
+        }
+    }
+}

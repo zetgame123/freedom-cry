@@ -1,0 +1,169 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: freedom-cry-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: ${DB_USER:-freedomcry}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be provided}
+      POSTGRES_DB: ${DB_NAME:-freedomcry_db}
+    # Database is strictly isolated within the internal network
+    networks:
+      - freedomcry-internal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-freedomcry} -d ${DB_NAME:-freedomcry_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: freedom-cry-redis
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be provided}
+    networks:
+      - freedomcry-internal
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: freedom-cry-api
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      GIN_MODE: "release"
+      DB_HOST: "postgres"
+      DB_PORT: "5432"
+      DB_USER: "${DB_USER:-freedomcry}"
+      DB_PASSWORD: "${DB_PASSWORD:?DB_PASSWORD must be provided}"
+      DB_NAME: "${DB_NAME:-freedomcry_db}"
+      DB_SSLMODE: "disable"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD must be provided}"
+      BASE_URL: "${BASE_URL:?BASE_URL must be set (e.g. https://vpn.freedomcry.net)}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be provided with high entropy}"
+      ADMIN_INITIAL_PASSWORD: "${ADMIN_INITIAL_PASSWORD:-}"
+      PROBE_SECRET: "${PROBE_SECRET:-}"
+    networks:
+      - freedomcry-internal
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: freedom-cry-caddy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - api
+    environment:
+      DOMAIN: "${DOMAIN:-localhost}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - freedomcry-internal
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+      args:
+        BOT_TYPE: client
+    container_name: freedom-cry-bot-client
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - api
+    environment:
+      TELEGRAM_BOT_TOKEN: "${CLIENT_BOT_TOKEN:-}"
+      API_BASE_URL: "http://api:8080"
+    networks:
+      - freedomcry-internal
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot-admin:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+      args:
+        BOT_TYPE: admin
+    container_name: freedom-cry-bot-admin
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - api
+    environment:
+      ADMIN_BOT_TOKEN: "${ADMIN_BOT_TOKEN:-}"
+      API_BASE_URL: "http://api:8080"
+      ADMIN_TELEGRAM_IDS: "${ADMIN_TELEGRAM_IDS:-}"
+      ADMIN_MFA_SECRET: "${ADMIN_MFA_SECRET:-}"
+    networks:
+      - freedomcry-internal
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  freedomcry-internal:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  caddy_data:
+  caddy_config:
