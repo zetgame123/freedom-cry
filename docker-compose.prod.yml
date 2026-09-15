@@ -80,7 +80,7 @@ services:
       MASTER_INVITE_CODE: "${MASTER_INVITE_CODE:-}"
       PROBE_SECRET: "${PROBE_SECRET:-}"
     ports:
-      - "127.0.0.1:8080:8080"
+      - "${API_BIND_ADDR:-127.0.0.1}:8080:8080"
     networks:
       - freedomcry-internal
     logging:
