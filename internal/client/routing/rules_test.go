@@ -63,4 +63,25 @@ func TestGenerateSingBoxRouteRules(t *testing.T) {
 	if lastRule["outbound"] != "proxy" {
 		t.Errorf("expected default rule outbound to be 'proxy', got %v", lastRule["outbound"])
 	}
+
+	// Verify censoredDomains appears BEFORE russianTLDs
+	censoredIdx := -1
+	russianIdx := -1
+	for i, r := range rules {
+		if suffixes, ok := r["domain_suffix"].([]string); ok && len(suffixes) > 0 {
+			if suffixes[0] == "instagram.com" {
+				censoredIdx = i
+			}
+			if suffixes[0] == ".ru" {
+				russianIdx = i
+			}
+		}
+	}
+	if censoredIdx == -1 || russianIdx == -1 {
+		t.Fatalf("missing expected rules in singbox route rules: censoredIdx=%d, russianIdx=%d", censoredIdx, russianIdx)
+	}
+	if censoredIdx >= russianIdx {
+		t.Errorf("CRITICAL ROUTING LEAK: censored domains rule (idx %d) must precede russian TLDs rule (idx %d)", censoredIdx, russianIdx)
+	}
 }
+

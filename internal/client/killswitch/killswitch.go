@@ -78,9 +78,9 @@ func (k *LinuxKillSwitch) Enable(vpnServerIP string, vpnServerPort int, vpnInter
 	}
 
 	if err != nil {
-		// Attempt rollback on failure to prevent locking the user out
-		_ = k.cleanup()
-		return fmt.Errorf("failed to enable killswitch: %w", err)
+		// Fail-Closed Security (FC-NEW-05): Never restore ACCEPT policies on activation failure,
+		// as restoring ACCEPT leaks unencrypted network traffic in the clear.
+		return fmt.Errorf("failed to enable killswitch: fail-closed engaged: %w", err)
 	}
 
 	k.enabled = true
@@ -203,8 +203,7 @@ type StubKillSwitch struct {
 func (s *StubKillSwitch) Enable(vpnServerIP string, vpnServerPort int, vpnInterface string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.enabled = true
-	return nil
+	return errors.New("native firewall killswitch is only supported on Linux (nftables/iptables); on non-Linux platforms use client app built-in killswitch (e.g. Sing-box, AmneziaVPN, Streisand)")
 }
 
 func (s *StubKillSwitch) Disable() error {

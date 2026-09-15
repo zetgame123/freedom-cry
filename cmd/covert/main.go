@@ -22,7 +22,7 @@ func main() {
 	mode := flag.String("mode", "client", "Run mode: 'client' (SOCKS5 proxy) or 'exit' (Exit node on VPS)")
 	transportType := flag.String("transport", "cups", "Covert transport: 'cups' (Cups.online Centrifugo) or 'yandex' (Yandex Docs)")
 	socks5Addr := flag.String("socks5", "127.0.0.1:1080", "SOCKS5 listen address (client mode)")
-	secretKey := flag.String("key", "freedom-cry-covert-secret-2026-key", "32-byte pre-shared encryption key")
+	secretKey := flag.String("key", "", "Pre-shared encryption key (min 16 bytes, can also be provided via COVERT_KEY environment variable)")
 
 	// Yandex Docs flags
 	docURL := flag.String("ydoc-url", "", "Yandex Docs document URL (e.g. https://docs.yandex.ru/docs/view?url=...)")
@@ -37,9 +37,17 @@ func main() {
 
 	flag.Parse()
 
+	keyVal := *secretKey
+	if keyVal == "" {
+		keyVal = os.Getenv("COVERT_KEY")
+	}
+	if len(keyVal) < 16 {
+		log.Fatalf("Fatal: Covert encryption key must be provided via -key or COVERT_KEY environment variable (minimum 16 bytes)")
+	}
+
 	// FC-08 Hardening: Derive room UUID deterministically from secretKey if not explicitly provided
 	if *roomUUID == "" || *roomUUID == "freedom-cry-emergency-room" {
-		h := sha256.Sum256([]byte("freedom-cry-cups-room-v1:" + *secretKey))
+		h := sha256.Sum256([]byte("freedom-cry-cups-room-v1:" + keyVal))
 		derivedUUID, err := uuid.FromBytes(h[:16])
 		if err == nil {
 			*roomUUID = derivedUUID.String()
@@ -76,7 +84,7 @@ func main() {
 	defer cancel()
 
 	if *mode == "exit" {
-		exitNode, err := tunnel.NewExitNode(tr, *sessionID, []byte(*secretKey))
+		exitNode, err := tunnel.NewExitNode(tr, *sessionID, []byte(keyVal))
 		if err != nil {
 			log.Fatalf("Failed to initialize exit node: %v", err)
 		}
@@ -86,7 +94,7 @@ func main() {
 		}
 		defer exitNode.Stop()
 	} else {
-		clientTunnel, err := tunnel.NewSOCKS5ClientTunnel(*socks5Addr, tr, *sessionID, []byte(*secretKey))
+		clientTunnel, err := tunnel.NewSOCKS5ClientTunnel(*socks5Addr, tr, *sessionID, []byte(keyVal))
 		if err != nil {
 			log.Fatalf("Failed to initialize SOCKS5 client: %v", err)
 		}

@@ -3,6 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -27,17 +32,19 @@ type ClientBotApp struct {
 	sessionsPath string
 	httpClient   *http.Client
 	mu           sync.RWMutex
-	// Ephemeral session cache: chatID -> UserSession
-	sessions map[int64]*UserSession
+	bootSecret   []byte
+	// Ephemeral session cache: HMAC-SHA256(bootSecret, chatID) -> UserSession
+	sessions map[string]*UserSession
 }
 
 type UserSession struct {
-	AccountNumber  string `json:"account_number"`
-	AuthToken      string `json:"auth_token"`
-	SubToken       string `json:"sub_token"`
-	SubscriptionID string `json:"subscription_id,omitempty"`
-	PlanName       string `json:"plan_name,omitempty"`
-	ExpiresAt      string `json:"expires_at,omitempty"`
+	AccountNumber  string    `json:"account_number"`
+	AuthToken      string    `json:"auth_token"`
+	SubToken       string    `json:"sub_token"`
+	SubscriptionID string    `json:"subscription_id,omitempty"`
+	PlanName       string    `json:"plan_name,omitempty"`
+	ExpiresAt      string    `json:"expires_at,omitempty"`
+	LastActive     time.Time `json:"last_active"`
 }
 
 func main() {
@@ -58,9 +65,14 @@ func main() {
 		*publicURL = *apiURL
 	}
 
-	sessionsMode := "ephemeral in-memory (Zero-Knowledge: no disk writes)"
+	sessionsMode := "ephemeral in-memory (Zero-Knowledge: no disk writes, HMAC-keyed)"
 	if *sessionsPath != "" {
 		sessionsMode = *sessionsPath
+	}
+
+	bootSecret := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, bootSecret); err != nil {
+		log.Fatalf("Failed to generate ephemeral boot secret: %v", err)
 	}
 
 	log.Println("==================================================")
@@ -74,7 +86,8 @@ func main() {
 		publicBase:   *publicURL,
 		sessionsPath: *sessionsPath,
 		httpClient:   &http.Client{Timeout: 10 * time.Second},
-		sessions:     make(map[int64]*UserSession),
+		bootSecret:   bootSecret,
+		sessions:     make(map[string]*UserSession),
 	}
 
 	app.loadSessions()
@@ -90,6 +103,20 @@ func main() {
 		cancel()
 	}()
 
+	// Periodic janitor for expired session eviction (30-minute inactivity TTL)
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				app.sweepExpiredSessions()
+			}
+		}
+	}()
+
 	// Start update listener
 	go func() {
 		err := app.bot.PollUpdates(ctx, app.handleUpdate)
@@ -100,6 +127,66 @@ func main() {
 
 	<-ctx.Done()
 	log.Println("[ClientBot] Exited cleanly.")
+}
+
+func (app *ClientBotApp) sessionKey(chatID int64) string {
+	mac := hmac.New(sha256.New, app.bootSecret)
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], uint64(chatID))
+	mac.Write(buf[:])
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (app *ClientBotApp) getSession(chatID int64) *UserSession {
+	key := app.sessionKey(chatID)
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	sess, exists := app.sessions[key]
+	if !exists || sess == nil {
+		return nil
+	}
+	if time.Since(sess.LastActive) > 30*time.Minute {
+		delete(app.sessions, key)
+		app.saveSessionsLocked()
+		return nil
+	}
+	sess.LastActive = time.Now()
+	return sess
+}
+
+func (app *ClientBotApp) setSession(chatID int64, sess *UserSession) {
+	key := app.sessionKey(chatID)
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	if sess != nil {
+		sess.LastActive = time.Now()
+	}
+	app.sessions[key] = sess
+	app.saveSessionsLocked()
+}
+
+func (app *ClientBotApp) deleteSession(chatID int64) {
+	key := app.sessionKey(chatID)
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	delete(app.sessions, key)
+	app.saveSessionsLocked()
+}
+
+func (app *ClientBotApp) sweepExpiredSessions() {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	now := time.Now()
+	for k, sess := range app.sessions {
+		if sess == nil || now.Sub(sess.LastActive) > 30*time.Minute {
+			delete(app.sessions, k)
+		}
+	}
+	app.saveSessionsLocked()
 }
 
 func (app *ClientBotApp) loadSessions() {
@@ -113,6 +200,12 @@ func (app *ClientBotApp) loadSessions() {
 	app.mu.Lock()
 	defer app.mu.Unlock()
 	if err := json.Unmarshal(data, &app.sessions); err == nil {
+		now := time.Now()
+		for _, s := range app.sessions {
+			if s != nil && s.LastActive.IsZero() {
+				s.LastActive = now
+			}
+		}
 		log.Printf("[ClientBot] Loaded %d active sessions from %s", len(app.sessions), app.sessionsPath)
 	}
 }
@@ -143,9 +236,8 @@ func (app *ClientBotApp) handleMessage(msg *telegram.Message) {
 	text := strings.TrimSpace(msg.Text)
 
 	// Check if user already has an active session with a valid sub token
-	app.mu.RLock()
-	sess, hasSession := app.sessions[chatID]
-	app.mu.RUnlock()
+	sess := app.getSession(chatID)
+	hasSession := (sess != nil && sess.SubToken != "")
 
 	// 1. Deep link support: /start <invite_code>
 	if strings.HasPrefix(text, "/start ") {
@@ -202,10 +294,7 @@ func (app *ClientBotApp) handleMessage(msg *telegram.Message) {
 	case "/status", "/account":
 		app.sendAccountStatus(chatID, sess)
 	case "/logout":
-		app.mu.Lock()
-		delete(app.sessions, chatID)
-		app.saveSessionsLocked()
-		app.mu.Unlock()
+		app.deleteSession(chatID)
 		_, _ = app.bot.SendMessage(chatID, "👋 Вы вышли из аккаунта. Чтобы войти снова, введите <code>/login НОМЕР-АККАУНТА</code> или активируйте новый инвайт-код.", nil)
 	case "/help":
 		app.sendHelp(chatID)
@@ -268,13 +357,10 @@ func (app *ClientBotApp) processInviteCode(chatID int64, code string) {
 		return
 	}
 
-	app.mu.Lock()
-	app.sessions[chatID] = sess
-	app.saveSessionsLocked()
-	app.mu.Unlock()
+	app.setSession(chatID, sess)
 
 	welcome := fmt.Sprintf(`🎉 <b>Инвайт-код успешно активирован!</b>
-
+ 
 Добро пожаловать в Freedom Cry!
 
 Ваш анонимный номер аккаунта:
@@ -298,10 +384,7 @@ func (app *ClientBotApp) processLogin(chatID int64, rawAccount string) {
 		return
 	}
 
-	app.mu.Lock()
-	app.sessions[chatID] = sess
-	app.saveSessionsLocked()
-	app.mu.Unlock()
+	app.setSession(chatID, sess)
 
 	msg := fmt.Sprintf(`✅ <b>Вход выполнен успешно!</b>
 
@@ -486,9 +569,7 @@ func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
 	_ = app.bot.AnswerCallback(cb.ID, "")
 	chatID := cb.From.ID
 
-	app.mu.RLock()
-	sess := app.sessions[chatID]
-	app.mu.RUnlock()
+	sess := app.getSession(chatID)
 
 	if sess == nil || sess.SubToken == "" {
 		app.sendInviteGate(chatID)
@@ -771,10 +852,8 @@ func (app *ClientBotApp) rotateKey(chatID int64, sess *UserSession) {
 	if err := json.NewDecoder(resp.Body).Decode(&res); err == nil && res.SubscriptionURL != "" {
 		parts := strings.Split(res.SubscriptionURL, "/sub/")
 		if len(parts) > 1 {
-			app.mu.Lock()
 			sess.SubToken = parts[1]
-			app.saveSessionsLocked()
-			app.mu.Unlock()
+			app.setSession(chatID, sess)
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"freedom-cry/internal/api/handler"
 	"freedom-cry/internal/api/middleware"
+	"freedom-cry/internal/cache"
 	"freedom-cry/internal/config"
 	"freedom-cry/internal/service"
 
@@ -26,13 +27,32 @@ func SetupRouter(
 	multiHopServ *service.MultiHopService,
 	autoHealingServ *service.AutoHealingService,
 	inviteServ *service.InviteService,
+	cacheClient ...*cache.Client,
 ) *gin.Engine {
+	var rdb *cache.Client
+	if len(cacheClient) > 0 {
+		rdb = cacheClient[0]
+	}
+
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
 	r := gin.New()
-	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
+	trustedProxies := []string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"}
+	if envProxies := os.Getenv("TRUSTED_PROXIES"); envProxies != "" {
+		parts := strings.Split(envProxies, ",")
+		var cleaned []string
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				cleaned = append(cleaned, s)
+			}
+		}
+		if len(cleaned) > 0 {
+			trustedProxies = cleaned
+		}
+	}
+	_ = r.SetTrustedProxies(trustedProxies)
 	r.Use(gin.Recovery())
 	// SECURITY & PRIVACY (FC-04): Use PrivacyLogger to mask subscription tokens
 	// and suppress recording user home IP addresses in logs.
@@ -131,7 +151,7 @@ func SetupRouter(
 			blindGroup.POST("/redeem", blindH.RedeemToken) // Unauthenticated / Zero-Knowledge
 		}
 		// Blind Token Signing (requires authenticated active user session)
-		v1.POST("/blind/sign", middleware.AuthMiddleware(cfg), blindH.SignBlindedToken)
+		v1.POST("/blind/sign", middleware.AuthMiddleware(cfg, db), blindH.SignBlindedToken)
 
 		// Phase 2: Multi-Hop Available Chains
 		v1.GET("/routes/chains", routeH.ListChains)
@@ -143,7 +163,7 @@ func SetupRouter(
 
 		// Node Agent Sync endpoints (Protected by cryptographic per-node identity verification)
 		nodeAgentGroup := v1.Group("/node")
-		nodeAgentGroup.Use(middleware.RequireNodeAuth(db))
+		nodeAgentGroup.Use(middleware.RequireNodeAuth(db, rdb))
 		{
 			nodeAgentGroup.POST("/sync", nodeH.NodeSync)
 			nodeAgentGroup.POST("/keys", nodeH.RegisterKeys)
@@ -151,7 +171,7 @@ func SetupRouter(
 
 		// Authenticated User Area
 		userGroup := v1.Group("/user")
-		userGroup.Use(middleware.AuthMiddleware(cfg))
+		userGroup.Use(middleware.AuthMiddleware(cfg, db))
 		{
 			userGroup.GET("/me", userH.GetMe)
 			userGroup.DELETE("/me", userH.DeleteMe) // GDPR hard-delete / Right-to-be-forgotten
@@ -169,7 +189,7 @@ func SetupRouter(
 
 		// Admin Area
 		adminGroup := v1.Group("/admin")
-		adminGroup.Use(middleware.AuthMiddleware(cfg), middleware.RequireAdmin())
+		adminGroup.Use(middleware.AuthMiddleware(cfg, db), middleware.RequireAdmin())
 		{
 			adminGroup.POST("/nodes", nodeH.AdminCreateNode)
 			adminGroup.POST("/billing/transactions/:id/complete", billingH.CompleteDepositManual)

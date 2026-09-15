@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"context"
+	"freedom-cry/internal/cache"
 	"freedom-cry/internal/config"
 	"freedom-cry/internal/models"
 
@@ -30,7 +32,16 @@ var (
 	nodeSigCache   = make(map[string]int64)
 )
 
-func checkAndRecordSig(sig string, now int64) bool {
+func checkAndRecordSig(rdb *cache.Client, sig string, now int64) bool {
+	if rdb != nil && rdb.Raw() != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		ok, err := rdb.SetNX(ctx, "replay:node_sig:"+sig, now, 70*time.Second)
+		if err == nil {
+			return ok
+		}
+	}
+
 	nodeSigCacheMu.Lock()
 	defer nodeSigCacheMu.Unlock()
 
@@ -54,7 +65,7 @@ const (
 	ContextAuthenticatedNodeID = "authenticatedNodeID"
 )
 
-func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
+func AuthMiddleware(cfg *config.Config, db ...*gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Allow administrative operations if X-Admin-Secret matches configured admin secret
 		adminSecretHeader := c.GetHeader("X-Admin-Secret")
@@ -109,6 +120,15 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
+		// Verify account existence and active status in DB to prevent deleted accounts retaining access (FC-SEC-17)
+		if len(db) > 0 && db[0] != nil && userUUID != uuid.Nil {
+			var activeCount int64
+			if err := db[0].Model(&models.User{}).Where("id = ? AND is_active = ?", userUUID, true).Count(&activeCount).Error; err != nil || activeCount == 0 {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "account not found, deactivated, or revoked"})
+				return
+			}
+		}
+
 		role, _ := claims["role"].(string)
 
 		c.Set(ContextUserID, userUUID)
@@ -131,7 +151,11 @@ func RequireAdmin() gin.HandlerFunc {
 // RequireNodeAuth enforces cryptographic node identity and zero-trust authentication.
 // Replaces the insecure global static X-Node-Secret.
 // Authenticates the node either via Ed25519 signature or unique per-node token.
-func RequireNodeAuth(db *gorm.DB) gin.HandlerFunc {
+func RequireNodeAuth(db *gorm.DB, cacheClient ...*cache.Client) gin.HandlerFunc {
+	var rdb *cache.Client
+	if len(cacheClient) > 0 {
+		rdb = cacheClient[0]
+	}
 	return func(c *gin.Context) {
 		nodeIDStr := c.GetHeader("X-Node-ID")
 		if nodeIDStr == "" {
@@ -174,8 +198,8 @@ func RequireNodeAuth(db *gorm.DB) gin.HandlerFunc {
 				return
 			}
 
-			// Prevent replay attack within the 60-second window
-			if !checkAndRecordSig(sigHeader, now) {
+			// Prevent replay attack within the 60-second window (FC-SEC-10)
+			if !checkAndRecordSig(rdb, sigHeader, now) {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "replay attack detected: signature already used"})
 				return
 			}

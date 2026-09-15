@@ -2,8 +2,8 @@ package probe
 
 import (
 	"crypto/tls"
-	"fmt"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -27,7 +27,7 @@ type NodeTarget struct {
 // ProbeVlessReality performs a TLS 1.3 ClientHello probe with Reality SNI
 func ProbeVlessReality(target NodeTarget, timeout time.Duration) ProbeResult {
 	start := time.Now()
-	addr := fmt.Sprintf("%s:%d", target.Host, target.VlessPort)
+	addr := net.JoinHostPort(target.Host, strconv.Itoa(target.VlessPort))
 
 	dialer := &net.Dialer{Timeout: timeout}
 	sni := target.SNI
@@ -64,7 +64,7 @@ func ProbeVlessReality(target NodeTarget, timeout time.Duration) ProbeResult {
 
 // ProbeTCP performs a basic TCP handshake probe
 func ProbeTCP(host string, port int, timeout time.Duration) bool {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return false
@@ -76,7 +76,7 @@ func ProbeTCP(host string, port int, timeout time.Duration) bool {
 // ProbeAWG sends an obfuscated initiation packet to verify UDP responsiveness
 func ProbeAWG(target NodeTarget, timeout time.Duration) ProbeResult {
 	start := time.Now()
-	addr := fmt.Sprintf("%s:%d", target.Host, target.AwgPort)
+	addr := net.JoinHostPort(target.Host, strconv.Itoa(target.AwgPort))
 
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {

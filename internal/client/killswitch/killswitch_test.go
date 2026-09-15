@@ -11,12 +11,12 @@ func TestStubKillSwitch(t *testing.T) {
 	}
 
 	err := ks.Enable("1.2.3.4", 443, "tun0")
-	if err != nil {
-		t.Fatalf("unexpected error enabling: %v", err)
+	if err == nil {
+		t.Fatal("expected error enabling stub killswitch on non-Linux platform, got nil")
 	}
 
-	if !ks.IsEnabled() {
-		t.Fatal("expected killswitch to be enabled")
+	if ks.IsEnabled() {
+		t.Fatal("expected killswitch to remain disabled")
 	}
 
 	err = ks.Disable()

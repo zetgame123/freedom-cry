@@ -81,19 +81,22 @@ func (s *MultiHopService) GenerateChainedSingBoxConfig(subToken string, entryID,
 		return "", errors.New("exit node not found or offline")
 	}
 
-	// Find user VLESS UUID for entry node (or sub-wide)
-	var clientKey *models.ClientKey
+	// Find user VLESS UUID for entry node and exit node
+	var entryKey *models.ClientKey
+	var exitKey *models.ClientKey
 	for i := range sub.ClientKeys {
 		if sub.ClientKeys[i].NodeID == entryID {
-			clientKey = &sub.ClientKeys[i]
-			break
+			entryKey = &sub.ClientKeys[i]
+		}
+		if sub.ClientKeys[i].NodeID == exitID {
+			exitKey = &sub.ClientKeys[i]
 		}
 	}
-	if clientKey == nil && len(sub.ClientKeys) > 0 {
-		clientKey = &sub.ClientKeys[0]
+	if entryKey == nil {
+		return "", errors.New("no client key allocated for entry node")
 	}
-	if clientKey == nil {
-		return "", errors.New("no client key allocated for this node")
+	if exitKey == nil {
+		return "", errors.New("no client key allocated for exit node")
 	}
 
 	// Construct chained sing-box config
@@ -116,7 +119,7 @@ func (s *MultiHopService) GenerateChainedSingBoxConfig(subToken string, entryID,
 				"tag":         "proxy-entry",
 				"server":      entryNode.Host,
 				"server_port": entryNode.VlessPort,
-				"uuid":        clientKey.VlessUUID,
+				"uuid":        entryKey.VlessUUID,
 				"tls": map[string]interface{}{
 					"enabled":     true,
 					"server_name": entryNode.RealityServerName,
@@ -133,7 +136,7 @@ func (s *MultiHopService) GenerateChainedSingBoxConfig(subToken string, entryID,
 				"tag":         "proxy-exit",
 				"server":      exitNode.Host,
 				"server_port": exitNode.VlessPort,
-				"uuid":        clientKey.VlessUUID,
+				"uuid":        exitKey.VlessUUID,
 				"detour":      "proxy-entry", // Multi-hop detour!
 				"tls": map[string]interface{}{
 					"enabled":     true,

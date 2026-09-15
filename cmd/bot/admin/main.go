@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -46,7 +47,7 @@ func main() {
 		*apiURL = "http://127.0.0.1:8080"
 	}
 	if *mfaSecret == "" {
-		*mfaSecret = "fc-admin-secret-2026"
+		log.Fatalf("[AdminBot Fatal] ADMIN_MFA_SECRET must be provided via -mfa or ADMIN_MFA_SECRET environment variable")
 	}
 	if *clientBotUsername == "" {
 		*clientBotUsername = "FreedomCry_vpnbot"
@@ -104,8 +105,8 @@ func (app *AdminBotApp) isAuthorized(chatID int64) bool {
 	app.mu.RLock()
 	defer app.mu.RUnlock()
 
-	// If whitelist is set, user must be in whitelist
-	if len(app.adminWhitelist) > 0 && !app.adminWhitelist[chatID] {
+	// Strict Whitelist check: user MUST be in whitelist
+	if len(app.adminWhitelist) == 0 || !app.adminWhitelist[chatID] {
 		return false
 	}
 
@@ -132,10 +133,16 @@ func (app *AdminBotApp) handleMessage(msg *telegram.Message) {
 	chatID := msg.Chat.ID
 	text := strings.TrimSpace(msg.Text)
 
+	// Strict Whitelist check: user must be in whitelist before executing any command or /auth (FC-NEW-07)
+	if len(app.adminWhitelist) == 0 || !app.adminWhitelist[chatID] {
+		_, _ = app.bot.SendMessage(chatID, "⛔ <b>Доступ запрещен.</b> Ваш Telegram ID не находится в белом списке администраторов.", nil)
+		return
+	}
+
 	// Authentication command: /auth <secret>
 	if strings.HasPrefix(text, "/auth ") {
 		secret := strings.TrimSpace(strings.TrimPrefix(text, "/auth "))
-		if secret == app.mfaSecret {
+		if subtle.ConstantTimeCompare([]byte(secret), []byte(app.mfaSecret)) == 1 {
 			app.mu.Lock()
 			app.authenticatedAt[chatID] = time.Now()
 			app.mu.Unlock()

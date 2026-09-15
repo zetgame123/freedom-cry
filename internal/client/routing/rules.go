@@ -181,16 +181,16 @@ func GenerateSingBoxRouteRules() []map[string]interface{} {
 			"outbound":      "direct",
 		},
 		{
+			"domain_suffix": censoredDomains,
+			"outbound":      "proxy",
+		},
+		{
 			"domain_suffix": domesticDomains,
 			"outbound":      "direct",
 		},
 		{
 			"domain_suffix": russianTLDs,
 			"outbound":      "direct",
-		},
-		{
-			"domain_suffix": censoredDomains,
-			"outbound":      "proxy",
 		},
 		{
 			"outbound": "proxy", // Default rule

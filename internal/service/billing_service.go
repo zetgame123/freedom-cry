@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type BillingService struct {
@@ -46,7 +47,8 @@ func (s *BillingService) CompleteDeposit(txID uuid.UUID, providerTxID string) (*
 	var transaction models.Transaction
 
 	err := s.db.Transaction(func(dbTx *gorm.DB) error {
-		if err := dbTx.First(&transaction, "id = ?", txID).Error; err != nil {
+		// Row-level lock to prevent concurrent double-credit race condition (FC-NEW-09)
+		if err := dbTx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&transaction, "id = ?", txID).Error; err != nil {
 			return errors.New("transaction not found")
 		}
 

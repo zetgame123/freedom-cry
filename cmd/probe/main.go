@@ -26,10 +26,14 @@ func main() {
 	masterURL := flag.String("master", "http://127.0.0.1:8080", "Freedom Cry Master API URL")
 	probeID := flag.String("id", "ru-msk-sensor-1", "Probe Identifier")
 	location := flag.String("location", "RU-Moscow", "Geographic location of sensor")
-	secret := flag.String("secret", "fc-probe-shared-secret-2026", "Shared sensor authentication token")
+	secret := flag.String("secret", os.Getenv("PROBE_SECRET"), "Shared sensor authentication token")
 	interval := flag.Duration("interval", 30*time.Second, "Probing interval")
 
 	flag.Parse()
+
+	if *secret == "" {
+		log.Fatalf("[Probe Fatal] PROBE_SECRET must be provided via -secret or PROBE_SECRET environment variable")
+	}
 
 	log.Println("==================================================")
 	log.Println("   🛰️ Freedom Cry - Censorship Probing Sensor     ")

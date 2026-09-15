@@ -6,10 +6,9 @@
 
 # Domain configured via environment variable DOMAIN (e.g. vpn.freedomcry.net)
 {$DOMAIN:localhost} {
-    # Logging
+    # Privacy Hardening (FC-NEW-11): Discard access logs to prevent recording client home IPs and /sub/<token> paths on disk
     log {
-        output stdout
-        format json
+        output discard
     }
 
     # Security headers

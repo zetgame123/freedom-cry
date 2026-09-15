@@ -75,15 +75,17 @@ func TestInviteRegistrationFlow(t *testing.T) {
 
 	// 1. Create a single-use invite in DB
 	singleCode := "FC-TEST-SINGLE-1"
-	_ = db.Where("code = ?", singleCode).Delete(&models.InviteCode{})
+	_ = db.Unscoped().Where("code = ?", singleCode).Delete(&models.InviteCode{})
 	singleInvite := models.InviteCode{
 		Code:      singleCode,
 		MaxUses:   1,
 		UsesCount: 0,
 		IsActive:  true,
 	}
-	_ = db.Create(&singleInvite)
-	defer db.Where("code = ?", singleCode).Delete(&models.InviteCode{})
+	if err := db.Create(&singleInvite).Error; err != nil {
+		t.Fatalf("Failed to create single-use invite: %v", err)
+	}
+	defer db.Unscoped().Where("code = ?", singleCode).Delete(&models.InviteCode{})
 
 	// 2. Validate invite
 	valBody, _ := json.Marshal(map[string]string{"invite_code": singleCode})

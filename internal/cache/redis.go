@@ -54,3 +54,17 @@ func (c *Client) Del(ctx context.Context, keys ...string) error {
 	}
 	return c.rdb.Del(ctx, keys...).Err()
 }
+
+func (c *Client) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) (bool, error) {
+	if c == nil || c.rdb == nil {
+		return true, nil
+	}
+	return c.rdb.SetNX(ctx, key, value, expiration).Result()
+}
+
+func (c *Client) Raw() *redis.Client {
+	if c == nil {
+		return nil
+	}
+	return c.rdb
+}

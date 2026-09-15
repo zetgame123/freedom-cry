@@ -38,12 +38,11 @@ func main() {
 		log.Fatalf("[Database] Failed to initialize database: %v", err)
 	}
 
-	// Redis connection
+	// Redis connection (used for node Ed25519 replay protection & rate limiting)
 	rdb, err := cache.Connect(&cfg.Redis)
 	if err != nil {
 		log.Printf("[Redis] Notice: %v", err)
 	}
-	_ = rdb
 
 	// Services initialization
 	userServ := service.NewUserService(db, cfg)
@@ -73,6 +72,7 @@ func main() {
 	router := api.SetupRouter(
 		cfg, db, userServ, nodeServ, subServ, billingServ,
 		blindServ, multiHopServ, autoHealingServ, inviteServ,
+		rdb,
 	)
 
 	srv := &http.Server{
