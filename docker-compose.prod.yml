@@ -76,9 +76,9 @@ services:
       BASE_URL: "${BASE_URL:?BASE_URL must be set (e.g. https://vpn.freedomcry.net)}"
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be provided with high entropy}"
       ADMIN_INITIAL_PASSWORD: "${ADMIN_INITIAL_PASSWORD:-}"
-      ADMIN_MFA_SECRET: "${ADMIN_MFA_SECRET:-}"
+      ADMIN_MFA_SECRET: "${ADMIN_MFA_SECRET:?ADMIN_MFA_SECRET must be provided with high entropy}"
       MASTER_INVITE_CODE: "${MASTER_INVITE_CODE:-}"
-      PROBE_SECRET: "${PROBE_SECRET:-}"
+      PROBE_SECRET: "${PROBE_SECRET:?PROBE_SECRET must be provided with high entropy}"
     ports:
       - "${API_BIND_ADDR:-127.0.0.1}:8080:8080"
     networks:

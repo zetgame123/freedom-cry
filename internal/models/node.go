@@ -51,7 +51,7 @@ type ServerNode struct {
 	RealitySNIPool    string `gorm:"type:text;default:'www.microsoft.com,gateway.icloud.com,azure.microsoft.com,d1.awsstatic.com'" json:"reality_sni_pool"`
 
 	// --- Hysteria 2 (QUIC + Brutal CC) Configuration ---
-	HysteriaEnabled    bool   `gorm:"default:true" json:"hysteria_enabled"`
+	HysteriaEnabled    bool   `gorm:"default:false" json:"hysteria_enabled"`
 	HysteriaPort       int    `gorm:"default:8443" json:"hysteria_port"`
 	HysteriaMasquerade string `gorm:"default:'https://bing.com'" json:"hysteria_masquerade"`
 
