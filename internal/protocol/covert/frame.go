@@ -22,6 +22,7 @@ const (
 	CmdClose   Command = 3 // Close stream
 	CmdPing    Command = 4 // Keep-alive ping
 	CmdPong    Command = 5 // Keep-alive pong
+	CmdChaff   Command = 6 // Chaff / dummy payload for anti-traffic-analysis & padding
 )
 
 type Direction byte

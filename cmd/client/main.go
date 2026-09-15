@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"freedom-cry/internal/client/discovery"
+	"freedom-cry/internal/client/dns"
 	"freedom-cry/internal/client/killswitch"
 	"freedom-cry/internal/client/routing"
 )
@@ -135,6 +138,40 @@ func main() {
 		action := routing.DetermineRouting(args[1])
 		fmt.Printf("Destination: %s -> Route Action: %s\n", args[1], strings.ToUpper(string(action)))
 
+	case "resolve":
+		if len(args) < 2 {
+			log.Fatal("Error: Domain required: freedom-cry-client resolve <domain>")
+		}
+		resolver := dns.NewSplitDNSResolver("")
+		isDom := resolver.IsDomestic(args[1])
+		mode := "Encrypted DoH (Anti-Leak)"
+		if isDom {
+			mode = "Direct Domestic (RU Bypass)"
+		}
+		fmt.Printf("Resolving %s via [%s]...\n", args[1], mode)
+		ips, err := resolver.ResolveHost(context.Background(), args[1])
+		if err != nil {
+			log.Fatalf("DNS resolution error: %v", err)
+		}
+		for _, ip := range ips {
+			fmt.Printf("  -> %s\n", ip.String())
+		}
+
+	case "discover":
+		if len(args) < 2 {
+			log.Fatal("Error: Domain required: freedom-cry-client discover <discovery-domain>")
+		}
+		disc := discovery.NewDiscoveryService(nil)
+		fmt.Printf("Querying DoH providers for fallback endpoints on %s...\n", args[1])
+		endpoints, err := disc.DiscoverFallbackEndpoints(context.Background(), args[1])
+		if err != nil {
+			log.Fatalf("Discovery error: %v", err)
+		}
+		fmt.Printf("Discovered %d live fallback endpoints:\n", len(endpoints))
+		for _, ep := range endpoints {
+			fmt.Printf("  -> %s\n", ep)
+		}
+
 	case "help", "--help", "-h":
 		printUsage()
 
@@ -225,6 +262,8 @@ Usage:
   freedom-cry-client connect <sub-url | deeplink> [flags]
   freedom-cry-client parse-deeplink <freedomcry://...>
   freedom-cry-client check-route <domain-or-ip>
+  freedom-cry-client resolve <domain>
+  freedom-cry-client discover <discovery-domain>
 
 Flags:
   -killswitch=true|false    Enable fail-closed firewall protection (default: true)

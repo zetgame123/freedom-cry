@@ -2,14 +2,17 @@ package mesh
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"text/template"
 )
 
 type MeshPeer struct {
-	PublicKey  string
-	Endpoint   string // host:port
-	AllowedIPs string // e.g. 10.99.2.1/32 or 10.8.0.0/16
+	PublicKey    string
+	Endpoint     string // host:port
+	AllowedIPs   string // e.g. 10.99.2.1/32 or 10.8.0.0/16
+	PresharedKey string // Optional Post-Quantum Pre-Shared Key (RFC 8484 / WG PQ Defense)
 }
 
 type MeshConfigParams struct {
@@ -27,11 +30,22 @@ ListenPort = {{.ListenPort}}
 {{range .Peers}}
 [Peer]
 PublicKey = {{.PublicKey}}
-Endpoint = {{.Endpoint}}
+{{if .PresharedKey}}PresharedKey = {{.PresharedKey}}
+{{end}}Endpoint = {{.Endpoint}}
 AllowedIPs = {{.AllowedIPs}}
 PersistentKeepalive = 25
 
 {{end}}`
+
+// GeneratePresharedKey creates a cryptographically secure 256-bit base64-encoded
+// pre-shared key for post-quantum WireGuard resistance.
+func GeneratePresharedKey() (string, error) {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(key), nil
+}
 
 // GenerateMeshConfig generates the WireGuard configuration for fc-mesh0 interface
 func GenerateMeshConfig(params MeshConfigParams) (string, error) {

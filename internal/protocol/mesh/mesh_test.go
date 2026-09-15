@@ -6,15 +6,21 @@ import (
 )
 
 func TestGenerateMeshConfig(t *testing.T) {
+	psk, err := GeneratePresharedKey()
+	if err != nil || len(psk) < 40 {
+		t.Fatalf("GeneratePresharedKey failed: %v", err)
+	}
+
 	params := MeshConfigParams{
 		PrivateKey: "privKey123=",
 		Address:    "10.99.1.1/16",
 		ListenPort: 51821,
 		Peers: []MeshPeer{
 			{
-				PublicKey:  "pubKeyExit1=",
-				Endpoint:   "exit1.freedomcry.net:51821",
-				AllowedIPs: "10.99.2.1/32, 0.0.0.0/0",
+				PublicKey:    "pubKeyExit1=",
+				Endpoint:     "exit1.freedomcry.net:51821",
+				AllowedIPs:   "10.99.2.1/32, 0.0.0.0/0",
+				PresharedKey: psk,
 			},
 		},
 	}
@@ -31,6 +37,7 @@ func TestGenerateMeshConfig(t *testing.T) {
 		"ListenPort = 51821",
 		"[Peer]",
 		"PublicKey = pubKeyExit1=",
+		"PresharedKey = " + psk,
 		"Endpoint = exit1.freedomcry.net:51821",
 		"AllowedIPs = 10.99.2.1/32, 0.0.0.0/0",
 	}

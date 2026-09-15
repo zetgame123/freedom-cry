@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -284,3 +285,184 @@ func (s *SubscriptionService) RotateVlessUUIDs() (int, error) {
 	}
 	return count, nil
 }
+
+// GenerateSingBoxUniversalConfig builds a complete, production-ready sing-box configuration (JSON)
+// that includes all active VLESS Reality and Hysteria 2 nodes, urltest automatic failover,
+// manual selector, split routing rules for Russian domestic services, and secure DoH DNS.
+func (s *SubscriptionService) GenerateSingBoxUniversalConfig(sub *models.Subscription) (string, error) {
+	if sub == nil {
+		return "", errors.New("nil subscription")
+	}
+
+	var nodeTags []string
+	var nodeOutbounds []map[string]interface{}
+
+	for _, k := range sub.ClientKeys {
+		if k.Node.IsRevoked {
+			continue
+		}
+
+		// 1. VLESS + Reality Outbound
+		if k.Node.VlessEnabled && k.VlessUUID != "" {
+			vlessTag := fmt.Sprintf("%s - Reality (%s)", k.Node.Name, k.Node.CountryCode)
+			nodeTags = append(nodeTags, vlessTag)
+
+			vlessOutbound := map[string]interface{}{
+				"type":        "vless",
+				"tag":         vlessTag,
+				"server":      k.Node.Host,
+				"server_port": k.Node.VlessPort,
+				"uuid":        k.VlessUUID,
+				"flow":        "xtls-rprx-vision",
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": k.Node.RealityServerName,
+					"utls": map[string]interface{}{
+						"enabled":     true,
+						"fingerprint": "chrome",
+					},
+					"reality": map[string]interface{}{
+						"enabled":    true,
+						"public_key": k.Node.RealityPubKey,
+						"short_id":   k.Node.RealityShortID,
+					},
+				},
+			}
+			nodeOutbounds = append(nodeOutbounds, vlessOutbound)
+		}
+
+		// 2. Hysteria 2 Outbound
+		if k.Node.HysteriaEnabled && k.Node.HysteriaPort > 0 {
+			hy2Tag := fmt.Sprintf("%s - Hysteria 2 (%s)", k.Node.Name, k.Node.CountryCode)
+			nodeTags = append(nodeTags, hy2Tag)
+
+			hy2Outbound := map[string]interface{}{
+				"type":        "hysteria2",
+				"tag":         hy2Tag,
+				"server":      k.Node.Host,
+				"server_port": k.Node.HysteriaPort,
+				"password":    k.VlessUUID,
+				"tls": map[string]interface{}{
+					"enabled":     true,
+					"server_name": k.Node.RealityServerName,
+					"insecure":    true,
+				},
+			}
+			nodeOutbounds = append(nodeOutbounds, hy2Outbound)
+		}
+	}
+
+	if len(nodeTags) == 0 {
+		nodeTags = append(nodeTags, "direct")
+	}
+
+	// Master list of outbounds
+	var allOutbounds []map[string]interface{}
+
+	// Automatic lowest-latency selection
+	allOutbounds = append(allOutbounds, map[string]interface{}{
+		"type":      "urltest",
+		"tag":       "FreedomCry-Auto",
+		"outbounds": nodeTags,
+		"url":       "https://www.gstatic.com/generate_204",
+		"interval":  "3m",
+		"tolerance": 50,
+	})
+
+	// Manual selector
+	manualTags := append([]string{"FreedomCry-Auto"}, nodeTags...)
+	allOutbounds = append(allOutbounds, map[string]interface{}{
+		"type":      "selector",
+		"tag":       "FreedomCry-Manual",
+		"outbounds": manualTags,
+		"default":   "FreedomCry-Auto",
+	})
+
+	// Add individual nodes
+	allOutbounds = append(allOutbounds, nodeOutbounds...)
+
+	// Direct and block outbounds
+	allOutbounds = append(allOutbounds, map[string]interface{}{
+		"type": "direct",
+		"tag":  "direct",
+	})
+	allOutbounds = append(allOutbounds, map[string]interface{}{
+		"type": "block",
+		"tag":  "block",
+	})
+	allOutbounds = append(allOutbounds, map[string]interface{}{
+		"type": "dns",
+		"tag":  "dns-out",
+	})
+
+	configMap := map[string]interface{}{
+		"log": map[string]interface{}{
+			"level": "warn",
+		},
+		"dns": map[string]interface{}{
+			"servers": []map[string]interface{}{
+				{
+					"tag":     "dns-remote",
+					"address": "https://1.1.1.1/dns-query",
+					"detour":  "FreedomCry-Manual",
+				},
+				{
+					"tag":     "dns-direct",
+					"address": "local",
+					"detour":  "direct",
+				},
+				{
+					"tag":     "dns-block",
+					"address": "rcode://success",
+				},
+			},
+			"rules": []map[string]interface{}{
+				{
+					"outbound": "any",
+					"server":   "dns-direct",
+				},
+				{
+					"geosite": []string{"category-gov-ru", "yandex", "vk", "mailru"},
+					"server":  "dns-direct",
+				},
+			},
+			"strategy": "prefer_ipv4",
+		},
+		"inbounds": []map[string]interface{}{
+			{
+				"type":        "mixed",
+				"tag":         "mixed-in",
+				"listen":      "127.0.0.1",
+				"listen_port": 20808,
+				"sniff":       true,
+			},
+		},
+		"outbounds": allOutbounds,
+		"route": map[string]interface{}{
+			"auto_detect_interface": true,
+			"final":                 "FreedomCry-Manual",
+			"rules": []map[string]interface{}{
+				{
+					"protocol": "dns",
+					"outbound": "dns-out",
+				},
+				{
+					"geoip":    []string{"private", "ru"},
+					"outbound": "direct",
+				},
+				{
+					"geosite":  []string{"category-gov-ru", "yandex", "vk", "mailru", "sberbank", "tinkoff"},
+					"outbound": "direct",
+				},
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(configMap, "", "  ")
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
+}
+

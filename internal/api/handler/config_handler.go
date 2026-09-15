@@ -114,6 +114,31 @@ func (h *ConfigHandler) GetRawVless(c *gin.Context) {
 	c.String(http.StatusOK, strings.Join(vlessLinks, "\n"))
 }
 
+// GetSingBoxUniversalConfig handles /sub/:token/singbox (Downloads unified sing-box config JSON)
+func (h *ConfigHandler) GetSingBoxUniversalConfig(c *gin.Context) {
+	token := c.Param("token")
+	sub, err := h.subServ.GetByToken(token)
+	if err != nil || !sub.IsValid() {
+		c.Header("Referrer-Policy", "no-referrer")
+		c.String(http.StatusForbidden, "Subscription expired, invalid or traffic limit reached")
+		return
+	}
+
+	c.Header("Referrer-Policy", "no-referrer")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+
+	conf, err := h.subServ.GenerateSingBoxUniversalConfig(sub)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate sing-box config"})
+		return
+	}
+
+	c.Header("Content-Disposition", "attachment; filename=FreedomCry-Singbox.json")
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.String(http.StatusOK, conf)
+}
+
 // GetAmneziaWGConfig handles /sub/:token/awg/:node_id (Downloads .conf template for AmneziaVPN / WireGuard)
 func (h *ConfigHandler) GetAmneziaWGConfig(c *gin.Context) {
 	token := c.Param("token")

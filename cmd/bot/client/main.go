@@ -140,10 +140,11 @@ func (app *ClientBotApp) sendMainMenu(chatID int64, text string) {
 				{Text: "📋 Ссылка на подписку", CallbackData: "cmd:sublink"},
 			},
 			{
-				{Text: "🌐 Протоколы (VLESS / AWG / Hy2)", CallbackData: "cmd:proto"},
-				{Text: "🔄 Ротация ключей", CallbackData: "cmd:rotate"},
+				{Text: "📱 Sing-box (JSON профиль)", CallbackData: "cmd:singbox"},
+				{Text: "🌐 Протоколы", CallbackData: "cmd:proto"},
 			},
 			{
+				{Text: "🔄 Ротация ключей", CallbackData: "cmd:rotate"},
 				{Text: "📲 Инструкция по настройке", CallbackData: "cmd:guide"},
 			},
 		},
@@ -169,6 +170,8 @@ func (app *ClientBotApp) handleCallback(cb *telegram.CallbackQuery) {
 		app.sendConfigQR(chatID, sess)
 	case "cmd:sublink":
 		app.sendSubLink(chatID, sess)
+	case "cmd:singbox":
+		app.sendSingboxConfig(chatID, sess)
 	case "cmd:proto":
 		app.sendProtocolInfo(chatID)
 	case "cmd:rotate":
@@ -215,6 +218,31 @@ func (app *ClientBotApp) sendSubLink(chatID int64, sess *UserSession) {
 Импортируйте её в любой клиент с поддержкой VLESS-Reality или AmneziaWG. Список серверов обновляется автоматически при блокировках.`, subURL)
 
 	_, _ = app.bot.SendMessage(chatID, text, nil)
+}
+
+func (app *ClientBotApp) sendSingboxConfig(chatID int64, sess *UserSession) {
+	singboxURL := fmt.Sprintf("%s/sub/%s/singbox", app.apiBase, sess.SubToken)
+	text := fmt.Sprintf(`📱 <b>Конфигурация Sing-box (Universal JSON Profile)</b>
+
+Продвинутый профиль со всеми протоколами:
+• Автоматический выбор быстрейшего узла (urltest)
+• Split-routing: российские сайты (.ru, Госуслуги, банки) идут напрямую
+• Безопасный DoH DNS через туннель без утечек
+• Поддержка VLESS-Reality + Hysteria 2
+
+📥 <b>Ссылка на конфиг:</b>
+<code>%s</code>
+
+<i>Скопируйте ссылку и добавьте как remote profile в Sing-box на телефоне или компьютере.</i>`, singboxURL)
+
+	keyboard := telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: "📥 Скачать конфиг", URL: singboxURL},
+			},
+		},
+	}
+	_, _ = app.bot.SendMessage(chatID, text, keyboard)
 }
 
 func (app *ClientBotApp) sendProtocolInfo(chatID int64) {

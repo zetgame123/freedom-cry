@@ -91,6 +91,8 @@ func SetupRouter(
 		subGroup.GET("/:token/awg/:node_id", configH.GetAmneziaWGConfig)
 		subGroup.POST("/:token/awg/:node_id/pubkey", configH.RegisterClientPubKey)
 		subGroup.GET("/:token/info", configH.GetSubInfo)
+		// Universal sing-box full profile with urltest & split-routing
+		subGroup.GET("/:token/singbox", configH.GetSingBoxUniversalConfig)
 		// Phase 2: Multi-Hop dynamic sing-box chained subscription
 		subGroup.GET("/:token/chain/:entry_id/:exit_id", routeH.GetChainedConfig)
 	}
