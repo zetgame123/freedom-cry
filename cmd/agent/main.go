@@ -319,7 +319,12 @@ func updateConfigFile(path string, content []byte, dryRun bool, serviceName stri
 		return nil
 	}
 
-	if err := atomicWriteConfigFile(path, content, 0600); err != nil {
+	perm := os.FileMode(0600)
+	if serviceName == "xray" {
+		perm = os.FileMode(0644)
+	}
+
+	if err := atomicWriteConfigFile(path, content, perm); err != nil {
 		return fmt.Errorf("atomic write to %s failed: %w", path, err)
 	}
 
