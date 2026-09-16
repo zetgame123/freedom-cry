@@ -74,8 +74,13 @@ func (s *InviteService) RegisterWithInvite(rawCode string) (*InviteRegisterRespo
 			matchedInvite = &invite
 		}
 
+		var invID *uuid.UUID
+		if matchedInvite != nil {
+			invID = &matchedInvite.ID
+		}
+
 		// 3. Create anonymous user account (Zero-Knowledge 16-digit account number)
-		authResp, err := s.userServ.CreateAnonymousAccount()
+		authResp, err := s.userServ.CreateAnonymousAccount(invID)
 		if err != nil {
 			return err
 		}
@@ -189,7 +194,71 @@ func (s *InviteService) ListInvites() ([]models.InviteCode, error) {
 	return list, nil
 }
 
-// RevokeInvite deactivates an invite code.
-func (s *InviteService) RevokeInvite(id uuid.UUID) error {
-	return s.db.Model(&models.InviteCode{}).Where("id = ?", id).Update("is_active", false).Error
+type RevokeResult struct {
+	InviteCode   string `json:"invite_code"`
+	UsersRevoked int    `json:"users_revoked"`
+	SubsRevoked  int    `json:"subs_revoked"`
+}
+
+// RevokeInvite deactivates an invite code and immediately terminates access for all users created with it
+func (s *InviteService) RevokeInvite(id uuid.UUID) (*RevokeResult, error) {
+	var result RevokeResult
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		var invite models.InviteCode
+		if err := tx.Where("id = ?", id).First(&invite).Error; err != nil {
+			return errors.New("invite code not found")
+		}
+		result.InviteCode = invite.Code
+
+		// 1. Deactivate invite code
+		if err := tx.Model(&invite).Update("is_active", false).Error; err != nil {
+			return err
+		}
+
+		// 2. Find and deactivate all users who registered with this invite code
+		var users []models.User
+		if err := tx.Where("invite_code_id = ?", id).Find(&users).Error; err != nil {
+			return err
+		}
+		result.UsersRevoked = len(users)
+
+		for _, u := range users {
+			_ = tx.Model(&models.User{}).Where("id = ?", u.ID).Update("is_active", false).Error
+
+			// Suspend all subscriptions and delete client keys on nodes
+			var subs []models.Subscription
+			if err := tx.Where("user_id = ?", u.ID).Find(&subs).Error; err == nil {
+				for _, sub := range subs {
+					result.SubsRevoked++
+					_ = tx.Model(&models.Subscription{}).Where("id = ?", sub.ID).Update("status", models.SubSuspended).Error
+					_ = tx.Where("subscription_id = ?", sub.ID).Delete(&models.ClientKey{}).Error
+				}
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// RevokeInviteByCode revokes an invite and terminates user access by either invite code string or UUID
+func (s *InviteService) RevokeInviteByCode(codeOrID string) (*RevokeResult, error) {
+	trimmed := strings.TrimSpace(codeOrID)
+	if trimmed == "" {
+		return nil, errors.New("invite code or id is required")
+	}
+
+	if id, err := uuid.Parse(trimmed); err == nil {
+		return s.RevokeInvite(id)
+	}
+
+	var invite models.InviteCode
+	if err := s.db.Where("LOWER(code) = LOWER(?)", trimmed).First(&invite).Error; err != nil {
+		return nil, errors.New("invite code not found")
+	}
+
+	return s.RevokeInvite(invite.ID)
 }

@@ -198,6 +198,9 @@ func SetupRouter(
 			adminGroup.GET("/invites", inviteH.ListInvites)
 			adminGroup.POST("/invites", inviteH.CreateInvite)
 			adminGroup.DELETE("/invites/:id", inviteH.RevokeInvite)
+
+			// User Access Revocation
+			adminGroup.DELETE("/users/:account", userH.AdminRevokeUser)
 		}
 	}
 

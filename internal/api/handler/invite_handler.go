@@ -101,17 +101,20 @@ func (h *InviteHandler) ListInvites(c *gin.Context) {
 }
 
 func (h *InviteHandler) RevokeInvite(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := uuid.Parse(idStr)
+	idOrCode := c.Param("id")
+	if idOrCode == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid invite identifier"})
+		return
+	}
+
+	result, err := h.inviteServ.RevokeInviteByCode(idOrCode)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid invite uuid"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := h.inviteServ.RevokeInvite(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"message": "Invite code revoked successfully"})
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Invite code revoked and associated user access terminated successfully",
+		"result":  result,
+	})
 }

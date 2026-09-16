@@ -58,3 +58,21 @@ func (h *UserHandler) DeleteMe(c *gin.Context) {
 		"message": "User account, subscriptions, cryptographic keys, and billing records permanently erased.",
 	})
 }
+
+func (h *UserHandler) AdminRevokeUser(c *gin.Context) {
+	account := c.Param("account")
+	if account == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account number is required"})
+		return
+	}
+
+	if err := h.userServ.RevokeUserByAccount(account); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "revoked",
+		"message": "User account suspended and access terminated successfully",
+	})
+}

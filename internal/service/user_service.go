@@ -103,11 +103,16 @@ func NormalizeAccountNumber(raw string) string {
 }
 
 // CreateAnonymousAccount creates a Mullvad-style Zero-Knowledge account with a 16-digit account number.
-// No email or password is required.
-func (s *UserService) CreateAnonymousAccount() (*AuthResponse, error) {
+// No email or password is required. Optionally associates with an inviteCodeID.
+func (s *UserService) CreateAnonymousAccount(inviteCodeID ...*uuid.UUID) (*AuthResponse, error) {
 	accNum, err := models.GenerateAccountNumber()
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate account number: %w", err)
+	}
+
+	var invID *uuid.UUID
+	if len(inviteCodeID) > 0 && inviteCodeID[0] != nil {
+		invID = inviteCodeID[0]
 	}
 
 	user := models.User{
@@ -115,6 +120,7 @@ func (s *UserService) CreateAnonymousAccount() (*AuthResponse, error) {
 		Role:          models.RoleUser,
 		Balance:       0.00,
 		IsActive:      true,
+		InviteCodeID:  invID,
 	}
 
 	if err := s.db.Create(&user).Error; err != nil {
@@ -127,6 +133,31 @@ func (s *UserService) CreateAnonymousAccount() (*AuthResponse, error) {
 	}
 
 	return &AuthResponse{Token: token, User: &user}, nil
+}
+
+// RevokeUserByAccount suspends a user account, revokes subscriptions and purges client keys immediately
+func (s *UserService) RevokeUserByAccount(accountNumber string) error {
+	norm := NormalizeAccountNumber(accountNumber)
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		var user models.User
+		if err := tx.Where("account_number = ?", norm).First(&user).Error; err != nil {
+			return errors.New("user account not found")
+		}
+
+		if err := tx.Model(&user).Update("is_active", false).Error; err != nil {
+			return err
+		}
+
+		var subs []models.Subscription
+		if err := tx.Where("user_id = ?", user.ID).Find(&subs).Error; err == nil {
+			for _, sub := range subs {
+				_ = tx.Model(&models.Subscription{}).Where("id = ?", sub.ID).Update("status", models.SubSuspended).Error
+				_ = tx.Where("subscription_id = ?", sub.ID).Delete(&models.ClientKey{}).Error
+			}
+		}
+
+		return nil
+	})
 }
 
 // LoginByAccountNumber authenticates a user using only their 16-digit account number

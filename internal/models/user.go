@@ -24,6 +24,7 @@ type User struct {
 	Balance       float64        `gorm:"type:decimal(12,2);default:0.00" json:"balance"`
 	Role          UserRole       `gorm:"type:varchar(20);default:'user'" json:"role"`
 	IsActive      bool           `gorm:"default:true" json:"is_active"`
+	InviteCodeID  *uuid.UUID     `gorm:"type:uuid;index" json:"invite_code_id,omitempty"`
 	CreatedAt     time.Time      `json:"created_at"`
 	UpdatedAt     time.Time      `json:"updated_at"`
 	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`

@@ -160,12 +160,15 @@ func (app *AdminBotApp) handleMessage(msg *telegram.Message) {
 		return
 	}
 
-	switch text {
-	case "/start", "/menu", "/dashboard":
+	switch {
+	case text == "/start" || text == "/menu" || text == "/dashboard":
 		app.sendAdminDashboard(chatID)
-	case "/invites":
+	case text == "/invites":
 		app.showInvitesMenu(chatID)
-	case "/panic":
+	case strings.HasPrefix(text, "/revoke"):
+		param := strings.TrimSpace(strings.TrimPrefix(text, "/revoke"))
+		app.revokeTarget(chatID, param)
+	case text == "/panic":
 		app.sendPanicConfirmation(chatID)
 	default:
 		app.sendAdminDashboard(chatID)
@@ -213,6 +216,14 @@ func (app *AdminBotApp) handleCallback(cb *telegram.CallbackQuery) {
 		app.showInvitesMenu(chatID)
 	case data == "adm:invites_list":
 		app.listInvites(chatID)
+	case data == "adm:revoke_menu":
+		app.showRevokeMenu(chatID)
+	case strings.HasPrefix(data, "adm:ask_rev:"):
+		invID := strings.TrimPrefix(data, "adm:ask_rev:")
+		app.confirmRevoke(chatID, invID)
+	case strings.HasPrefix(data, "adm:do_rev:"):
+		invID := strings.TrimPrefix(data, "adm:do_rev:")
+		app.executeRevoke(chatID, invID)
 	case strings.HasPrefix(data, "adm:gen_invite:"):
 		limitStr := strings.TrimPrefix(data, "adm:gen_invite:")
 		maxUses, _ := strconv.Atoi(limitStr)
@@ -242,6 +253,7 @@ func (app *AdminBotApp) showInvitesMenu(chatID int64) {
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{
 				{Text: "📋 Список кодов", CallbackData: "adm:invites_list"},
+				{Text: "🗑 Отозвать код / доступ", CallbackData: "adm:revoke_menu"},
 			},
 			{
 				{Text: "➕ Одноразовый (1 чел.)", CallbackData: "adm:gen_invite:1"},
@@ -299,7 +311,7 @@ func (app *AdminBotApp) listInvites(chatID int64) {
 	for _, inv := range data.Invites {
 		status := "🟢 Активен"
 		if !inv.IsActive {
-			status = "🔴 Исчерпан"
+			status = "🔴 Отозван / Исчерпан"
 		}
 		maxStr := fmt.Sprintf("%d", inv.MaxUses)
 		if inv.MaxUses == 0 {
@@ -314,6 +326,9 @@ func (app *AdminBotApp) listInvites(chatID int64) {
 		InlineKeyboard: [][]telegram.InlineKeyboardButton{
 			{
 				{Text: "➕ Создать новый инвайт", CallbackData: "adm:invites"},
+				{Text: "🗑 Отозвать код", CallbackData: "adm:revoke_menu"},
+			},
+			{
 				{Text: "⬅️ Назад", CallbackData: "adm:dashboard"},
 			},
 		},
@@ -490,4 +505,256 @@ func (app *AdminBotApp) sendPanicConfirmation(chatID int64) {
 
 func (app *AdminBotApp) executeEmergencyPanic(chatID int64) {
 	_, _ = app.bot.SendMessage(chatID, "🚨 <b>КРАСНАЯ КНОПКА АКТИВИРОВАНА!</b>\nВсе ключи сброшены и перевыпущены. Grace period: 3600с.", nil)
+}
+
+func (app *AdminBotApp) showRevokeMenu(chatID int64) {
+	url := fmt.Sprintf("%s/api/v1/admin/invites", app.apiBase)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Admin-Secret", app.mfaSecret)
+
+	resp, err := app.httpClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		_, _ = app.bot.SendMessage(chatID, "❌ Не удалось загрузить список инвайтов из API.", nil)
+		return
+	}
+	defer resp.Body.Close()
+
+	var data struct {
+		Invites []InviteItem `json:"invites"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		_, _ = app.bot.SendMessage(chatID, "❌ Ошибка разбора ответа сервера.", nil)
+		return
+	}
+
+	var activeInvites []InviteItem
+	for _, inv := range data.Invites {
+		if inv.IsActive {
+			activeInvites = append(activeInvites, inv)
+		}
+	}
+
+	if len(activeInvites) == 0 {
+		keyboard := telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{
+					{Text: "➕ Создать новый инвайт", CallbackData: "adm:invites"},
+					{Text: "⬅️ Главное меню", CallbackData: "adm:dashboard"},
+				},
+			},
+		}
+		_, _ = app.bot.SendMessage(chatID, "🎫 <b>Нет активных инвайт-кодов для отзыва.</b>\n\nВы также можете отозвать доступ пользователя по номеру аккаунта через команду:\n<code>/revoke &lt;НОМЕР_АККАУНТА&gt;</code>", keyboard)
+		return
+	}
+
+	text := "🗑 <b>Отзыв инвайт-кода и немедленная блокировка доступа:</b>\n\n" +
+		"Выберите код для отзыва или отправьте команду:\n<code>/revoke &lt;КОД_ИЛИ_НОМЕР_СЧЕТА&gt;</code>\n\n" +
+		"<i>⚠️ Внимание: при отзыве инвайта все пользователи, активировавшие его, немедленно блокируются, их подписки останавливаются, а ключи удаляются со всех VPN узлов.</i>"
+
+	var rows [][]telegram.InlineKeyboardButton
+	for _, inv := range activeInvites {
+		maxStr := fmt.Sprintf("%d", inv.MaxUses)
+		if inv.MaxUses == 0 {
+			maxStr = "∞"
+		}
+		shortCode := inv.Code
+		if len(shortCode) > 16 {
+			shortCode = shortCode[:16] + "…"
+		}
+		label := fmt.Sprintf("🗑 %s (%d/%s исп.)", shortCode, inv.UsesCount, maxStr)
+		rows = append(rows, []telegram.InlineKeyboardButton{
+			{Text: label, CallbackData: fmt.Sprintf("adm:ask_rev:%s", inv.ID)},
+		})
+	}
+
+	rows = append(rows, []telegram.InlineKeyboardButton{
+		{Text: "⬅️ Назад в меню инвайтов", CallbackData: "adm:invites"},
+	})
+
+	_, _ = app.bot.SendMessage(chatID, text, telegram.InlineKeyboardMarkup{InlineKeyboard: rows})
+}
+
+func (app *AdminBotApp) confirmRevoke(chatID int64, inviteID string) {
+	url := fmt.Sprintf("%s/api/v1/admin/invites", app.apiBase)
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("X-Admin-Secret", app.mfaSecret)
+
+	codeName := inviteID
+	resp, err := app.httpClient.Do(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		var data struct {
+			Invites []InviteItem `json:"invites"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&data)
+		resp.Body.Close()
+		for _, inv := range data.Invites {
+			if inv.ID == inviteID {
+				codeName = inv.Code
+				break
+			}
+		}
+	} else if resp != nil {
+		resp.Body.Close()
+	}
+
+	text := fmt.Sprintf("⚠️ <b>Подтверждение отзыва доступа:</b>\n\n"+
+		"Вы действительно хотите отозвать инвайт-код:\n<code>%s</code>?\n\n"+
+		"• Инвайт-код будет аннулирован.\n"+
+		"• Все пользователи, зарегистрированные по нему, будут немедленно заблокированы.\n"+
+		"• Все клиентские ключи будут удалены со всех серверов.", codeName)
+
+	keyboard := telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: "❌ Да, отозвать и заблокировать доступ", CallbackData: fmt.Sprintf("adm:do_rev:%s", inviteID)},
+			},
+			{
+				{Text: "⬅️ Отмена", CallbackData: "adm:revoke_menu"},
+			},
+		},
+	}
+
+	_, _ = app.bot.SendMessage(chatID, text, keyboard)
+}
+
+func (app *AdminBotApp) executeRevoke(chatID int64, idOrCode string) {
+	url := fmt.Sprintf("%s/api/v1/admin/invites/%s", app.apiBase, idOrCode)
+	req, _ := http.NewRequest("DELETE", url, nil)
+	req.Header.Set("X-Admin-Secret", app.mfaSecret)
+
+	resp, err := app.httpClient.Do(req)
+	if err != nil {
+		_, _ = app.bot.SendMessage(chatID, fmt.Sprintf("❌ Ошибка соединения с API: %v", err), nil)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errData map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&errData)
+		errMsg := "не удалось отозвать инвайт"
+		if msg, ok := errData["error"].(string); ok {
+			errMsg = msg
+		}
+		_, _ = app.bot.SendMessage(chatID, fmt.Sprintf("❌ Ошибка API: %s", errMsg), nil)
+		return
+	}
+
+	var res struct {
+		Message string `json:"message"`
+		Result  struct {
+			InviteCode   string `json:"invite_code"`
+			UsersRevoked int    `json:"users_revoked"`
+			SubsRevoked  int    `json:"subs_revoked"`
+		} `json:"result"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+
+	codeStr := res.Result.InviteCode
+	if codeStr == "" {
+		codeStr = idOrCode
+	}
+
+	msg := fmt.Sprintf("✅ <b>Доступ успешно заблокирован!</b>\n\n"+
+		"🎫 Инвайт: <code>%s</code>\n"+
+		"👤 Заблокировано пользователей: <b>%d</b>\n"+
+		"🔑 Аннулировано подписок/ключей: <b>%d</b>\n\n"+
+		"<i>Ключи доступа удалены с узлов VPN. Трафик заблокирован.</i>",
+		codeStr, res.Result.UsersRevoked, res.Result.SubsRevoked)
+
+	keyboard := telegram.InlineKeyboardMarkup{
+		InlineKeyboard: [][]telegram.InlineKeyboardButton{
+			{
+				{Text: "📋 Список кодов", CallbackData: "adm:invites_list"},
+				{Text: "🗑 Отозвать еще", CallbackData: "adm:revoke_menu"},
+			},
+			{
+				{Text: "⬅️ Главное меню", CallbackData: "adm:dashboard"},
+			},
+		},
+	}
+
+	_, _ = app.bot.SendMessage(chatID, msg, keyboard)
+}
+
+func (app *AdminBotApp) revokeTarget(chatID int64, target string) {
+	trimmed := strings.TrimSpace(target)
+	if trimmed == "" {
+		_, _ = app.bot.SendMessage(chatID, "❌ Укажите инвайт-код или номер счёта: <code>/revoke FC-XXXX-...</code>", nil)
+		return
+	}
+
+	// 1. Try revoking as invite code
+	url := fmt.Sprintf("%s/api/v1/admin/invites/%s", app.apiBase, trimmed)
+	req, _ := http.NewRequest("DELETE", url, nil)
+	req.Header.Set("X-Admin-Secret", app.mfaSecret)
+
+	resp, err := app.httpClient.Do(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		var res struct {
+			Message string `json:"message"`
+			Result  struct {
+				InviteCode   string `json:"invite_code"`
+				UsersRevoked int    `json:"users_revoked"`
+				SubsRevoked  int    `json:"subs_revoked"`
+			} `json:"result"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&res)
+
+		codeStr := res.Result.InviteCode
+		if codeStr == "" {
+			codeStr = trimmed
+		}
+
+		msg := fmt.Sprintf("✅ <b>Инвайт-код отозван, доступ заблокирован!</b>\n\n"+
+			"🎫 Инвайт: <code>%s</code>\n"+
+			"👤 Заблокировано пользователей: <b>%d</b>\n"+
+			"🔑 Аннулировано подписок/ключей: <b>%d</b>\n\n"+
+			"<i>Ключи доступа удалены с узлов VPN. Трафик заблокирован.</i>",
+			codeStr, res.Result.UsersRevoked, res.Result.SubsRevoked)
+
+		keyboard := telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{
+					{Text: "📋 Список кодов", CallbackData: "adm:invites_list"},
+					{Text: "⬅️ Главное меню", CallbackData: "adm:dashboard"},
+				},
+			},
+		}
+		_, _ = app.bot.SendMessage(chatID, msg, keyboard)
+		return
+	}
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	// 2. Try revoking as account number
+	urlUser := fmt.Sprintf("%s/api/v1/admin/users/%s", app.apiBase, trimmed)
+	reqUser, _ := http.NewRequest("DELETE", urlUser, nil)
+	reqUser.Header.Set("X-Admin-Secret", app.mfaSecret)
+
+	respUser, errUser := app.httpClient.Do(reqUser)
+	if errUser == nil && respUser.StatusCode == http.StatusOK {
+		defer respUser.Body.Close()
+		msg := fmt.Sprintf("✅ <b>Пользователь успешно заблокирован!</b>\n\n"+
+			"👤 Номер счёта: <code>%s</code>\n"+
+			"🔒 Статус аккаунта: Заблокирован\n"+
+			"🔑 Подписки остановлены, ключи удалены со всех серверов VPN.", trimmed)
+
+		keyboard := telegram.InlineKeyboardMarkup{
+			InlineKeyboard: [][]telegram.InlineKeyboardButton{
+				{
+					{Text: "⬅️ Главное меню", CallbackData: "adm:dashboard"},
+				},
+			},
+		}
+		_, _ = app.bot.SendMessage(chatID, msg, keyboard)
+		return
+	}
+	if respUser != nil {
+		respUser.Body.Close()
+	}
+
+	_, _ = app.bot.SendMessage(chatID, fmt.Sprintf("❌ Объект не найден: <code>%s</code>.\nПроверьте правильность инвайт-кода или номера счёта.", trimmed), nil)
 }
