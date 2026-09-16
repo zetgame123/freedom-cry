@@ -53,6 +53,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
+    image: freedom-cry-api:latest
     container_name: freedom-cry-api
     restart: unless-stopped
     security_opt:
