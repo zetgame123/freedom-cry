@@ -152,7 +152,7 @@ func (s *UserService) RevokeUserByAccount(accountNumber string) error {
 		if err := tx.Where("user_id = ?", user.ID).Find(&subs).Error; err == nil {
 			for _, sub := range subs {
 				_ = tx.Model(&models.Subscription{}).Where("id = ?", sub.ID).Update("status", models.SubSuspended).Error
-				_ = tx.Where("subscription_id = ?", sub.ID).Delete(&models.ClientKey{}).Error
+				_ = tx.Unscoped().Where("subscription_id = ?", sub.ID).Delete(&models.ClientKey{}).Error
 			}
 		}
 

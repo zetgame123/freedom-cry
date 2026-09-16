@@ -231,7 +231,7 @@ func (s *InviteService) RevokeInvite(id uuid.UUID) (*RevokeResult, error) {
 				for _, sub := range subs {
 					result.SubsRevoked++
 					_ = tx.Model(&models.Subscription{}).Where("id = ?", sub.ID).Update("status", models.SubSuspended).Error
-					_ = tx.Where("subscription_id = ?", sub.ID).Delete(&models.ClientKey{}).Error
+					_ = tx.Unscoped().Where("subscription_id = ?", sub.ID).Delete(&models.ClientKey{}).Error
 				}
 			}
 		}
