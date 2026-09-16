@@ -56,6 +56,50 @@ func (h *NodeHandler) ListNodes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"nodes": res})
 }
 
+// PublicFleetStatus returns a public, unauthenticated health status of active server nodes with CORS allowed
+func (h *NodeHandler) PublicFleetStatus(c *gin.Context) {
+	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+	nodes, err := h.nodeServ.GetActiveNodes()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": "degraded", "error": err.Error()})
+		return
+	}
+
+	type PublicNode struct {
+		Name        string   `json:"name"`
+		Country     string   `json:"country"`
+		CountryCode string   `json:"country_code"`
+		IsOnline    bool     `json:"is_online"`
+		LoadPercent int      `json:"load_percent"`
+		Protocols   []string `json:"protocols"`
+	}
+
+	var res []PublicNode
+	for _, n := range nodes {
+		var protos []string
+		if n.VlessEnabled {
+			protos = append(protos, "VLESS-Reality")
+		}
+		if n.AwgEnabled {
+			protos = append(protos, "AmneziaWG")
+		}
+		res = append(res, PublicNode{
+			Name:        n.Name,
+			Country:     n.Country,
+			CountryCode: n.CountryCode,
+			IsOnline:    n.IsOnline,
+			LoadPercent: n.LoadPercent,
+			Protocols:   protos,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "operational",
+		"nodes":     res,
+		"timestamp": time.Now().UTC(),
+	})
+}
+
 func (h *NodeHandler) AdminCreateNode(c *gin.Context) {
 	var dto service.CreateNodeDTO
 	if err := c.ShouldBindJSON(&dto); err != nil {

@@ -107,6 +107,12 @@ func SetupRouter(
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "Freedom Cry VPN API"})
 	})
 
+	// Public Ping endpoint for browser latency probes & uptime monitoring
+	r.GET("/ping", func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.String(http.StatusOK, "pong")
+	})
+
 	// Public Subscription Endpoints (Protected by 256-bit secret token & rate-limiting: 60 req/min per IP)
 	subLimiter := middleware.NewRateLimiter(60, time.Minute)
 	subGroup := r.Group("/sub")
@@ -141,8 +147,9 @@ func SetupRouter(
 			authGroup.POST("/invite/validate", inviteH.ValidateInvite)
 		}
 
-		// Public Plans
+		// Public Plans & Fleet Status
 		v1.GET("/plans", userH.GetPlans)
+		v1.GET("/public/status", nodeH.PublicFleetStatus)
 
 		// Phase 1: Blind Token / Privacy Pass Endpoints
 		blindGroup := v1.Group("/blind")
